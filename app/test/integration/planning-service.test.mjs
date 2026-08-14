@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { access } from 'node:fs/promises';
+import { access, mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 
@@ -20,8 +20,9 @@ test('validates repository roots and stores only canonical local Git repositorie
   const missing = path.join(fixture.root, 'missing');
   const nonRepository = await fixture.makeNonRepository();
   const plainFile = await fixture.makeFile();
+  const fakeRepository = await fixture.makeFakeRepository();
 
-  for (const repositoryRoot of ['', missing, nonRepository, plainFile]) {
+  for (const repositoryRoot of ['', missing, nonRepository, plainFile, fakeRepository]) {
     await assert.rejects(
       fixture.service.createProject({
         name: 'Invalid repository',
@@ -38,14 +39,29 @@ test('validates repository roots and stores only canonical local Git repositorie
   }
 
   const repositoryRoot = await fixture.makeRepository('canonical-repository');
+  const nestedDirectory = path.join(repositoryRoot, 'nested', 'selection');
+  await mkdir(nestedDirectory, { recursive: true });
   const result = await fixture.service.createProject({
     name: '  Canonical project  ',
-    repositoryRoot: `  ${repositoryRoot}  `,
+    repositoryRoot: `  ${nestedDirectory}  `,
     idempotencyKey: idempotencyKey('valid-project'),
   });
   assert.equal(result.project.name, 'Canonical project');
   assert.equal(result.project.repositoryRoot, repositoryRoot);
-  assert.deepEqual(fixture.service.verifyInvariants().passed.length, 9);
+  const discussion = fixture.service.createDiscussion(result.project.id, {
+    title: 'Repository availability',
+    idempotencyKey: idempotencyKey('repository-discussion'),
+  }).discussion;
+  await rm(path.join(repositoryRoot, '.git'), { recursive: true, force: true });
+  const unavailable = fixture.service.startAgentRun(discussion.id, {
+    adapter: 'deterministic',
+    prompt: 'Do not reach the adapter after the registered repository disappears.',
+    idempotencyKey: idempotencyKey('unavailable-repository-run'),
+  }).run;
+  const failed = await waitForRun(fixture.service, discussion.id, unavailable.id, 'FAILED');
+  assert.equal(failed.errorCode, 'REPOSITORY_UNAVAILABLE');
+  assert.equal(failed.errorMessage, 'The registered Git repository is no longer available. Restore it before retrying.');
+  assert.deepEqual(fixture.service.verifyInvariants().passed.length, 12);
 });
 
 test('persists the planning loop on disk across a real application restart in WAL mode', async t => {
@@ -67,8 +83,9 @@ test('persists the planning loop on disk across a real application restart in WA
   fixture.service.verifyInvariants();
 
   assert.equal(fixture.database.prepare('PRAGMA journal_mode').get().journal_mode.toLowerCase(), 'wal');
+  assert.equal(fixture.database.prepare('PRAGMA locking_mode').get().locking_mode.toLowerCase(), 'exclusive');
   assert.equal(Number(fixture.database.prepare('PRAGMA foreign_keys').get().foreign_keys), 1);
-  assert.equal(Number(fixture.database.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get().count), 2);
+  assert.equal(Number(fixture.database.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get().count), 3);
   await fixture.close();
   await fixture.open();
 
@@ -151,13 +168,18 @@ test('idempotency receipts prevent duplicate messages, runs, points, packages, a
     idempotencyKey: messageKey,
   });
   const replayedMessage = fixture.service.addMessage(discussion.id, {
-    content: 'A changed payload must not create another contribution.',
+    content: 'One durable contribution.',
     contributionType: 'OWNER',
     idempotencyKey: messageKey,
   });
   assert.equal(replayedMessage.replayed, true);
   assert.equal(replayedMessage.message.id, firstMessage.message.id);
   assert.equal(replayedMessage.message.content, 'One durable contribution.');
+  assertAppError(() => fixture.service.addMessage(discussion.id, {
+    content: 'A changed payload must be refused for the same key.',
+    contributionType: 'OWNER',
+    idempotencyKey: messageKey,
+  }), { status: 409, code: 'CONFLICT', message: /different request/ });
 
   const pointKey = idempotencyKey('same-point');
   const firstPoint = fixture.service.capturePoint(firstMessage.message.id, {
@@ -166,12 +188,40 @@ test('idempotency receipts prevent duplicate messages, runs, points, packages, a
     idempotencyKey: pointKey,
   });
   const replayedPoint = fixture.service.capturePoint(firstMessage.message.id, {
-    pointType: 'RISK',
-    text: 'Changed replay payload.',
+    pointType: 'REQUIREMENT',
+    text: 'Use idempotent mutations.',
     idempotencyKey: pointKey,
   });
   assert.equal(replayedPoint.replayed, true);
   assert.equal(replayedPoint.point.id, firstPoint.point.id);
+  assertAppError(() => fixture.service.capturePoint(firstMessage.message.id, {
+    pointType: 'RISK',
+    text: 'Changed replay payload.',
+    idempotencyKey: pointKey,
+  }), { status: 409, code: 'CONFLICT', message: /different request/ });
+
+  const countsBeforeCrossOperationConflict = fixture.database.prepare(`
+    SELECT
+      (SELECT COUNT(*) FROM participants) AS participants,
+      (SELECT COUNT(*) FROM agent_runs) AS runs,
+      (SELECT COUNT(*) FROM audit_events) AS auditEvents
+  `).get();
+  assertAppError(() => fixture.service.startAgentRun(discussion.id, {
+    adapter: 'deterministic',
+    prompt: 'A refused key reuse must not create attribution or run state.',
+    idempotencyKey: messageKey,
+  }), { status: 409, code: 'CONFLICT', message: /different request/ });
+  const countsAfterCrossOperationConflict = fixture.database.prepare(`
+    SELECT
+      (SELECT COUNT(*) FROM participants) AS participants,
+      (SELECT COUNT(*) FROM agent_runs) AS runs,
+      (SELECT COUNT(*) FROM audit_events) AS auditEvents
+  `).get();
+  assert.deepEqual(
+    { ...countsAfterCrossOperationConflict },
+    { ...countsBeforeCrossOperationConflict },
+    'A refused idempotency-key reuse must be a zero-write operation.',
+  );
   const accepted = fixture.service.dispositionPoint(firstPoint.point.id, {
     disposition: 'ACCEPTED',
     expectedVersion: 1,
@@ -186,12 +236,29 @@ test('idempotency receipts prevent duplicate messages, runs, points, packages, a
   });
   const replayedRun = fixture.service.startAgentRun(discussion.id, {
     adapter: 'deterministic',
-    prompt: 'A changed prompt must not start a second run.',
+    prompt: 'Return one contribution.',
     idempotencyKey: runKey,
   });
   assert.equal(replayedRun.replayed, true);
   assert.equal(replayedRun.run.id, firstRun.run.id);
+  assertAppError(() => fixture.service.startAgentRun(discussion.id, {
+    adapter: 'deterministic',
+    prompt: 'A changed prompt must be refused for the same key.',
+    idempotencyKey: runKey,
+  }), { status: 409, code: 'CONFLICT', message: /different request/ });
   await waitForRun(fixture.service, discussion.id, firstRun.run.id, 'COMPLETED');
+
+  const { discussion: otherDiscussion } = await createProjectAndDiscussion(fixture, {
+    repositoryDirectory: 'idempotency-other-project',
+    projectName: 'Other project',
+    discussionTitle: 'Other room',
+  });
+  assertAppError(() => fixture.service.addMessage(otherDiscussion.id, {
+    content: 'One durable contribution.',
+    contributionType: 'OWNER',
+    idempotencyKey: messageKey,
+  }), { status: 409, code: 'CONFLICT', message: /different request/ });
+  assert.equal(fixture.service.getDiscussion(otherDiscussion.id).messages.length, 0);
 
   const packageKey = idempotencyKey('same-package');
   const firstDraft = fixture.service.preparePackage(discussion.id, { idempotencyKey: packageKey });
@@ -214,6 +281,12 @@ test('idempotency receipts prevent duplicate messages, runs, points, packages, a
   });
   assert.equal(replayedApproval.replayed, true);
   assert.equal(replayedApproval.approval.id, firstApproval.approval.id);
+  const fingerprints = fixture.database.prepare(`
+    SELECT request_fingerprint AS fingerprint FROM mutation_receipts
+    WHERE request_fingerprint <> 'LEGACY_UNBOUND'
+  `).all();
+  assert.ok(fingerprints.length > 0);
+  assert.ok(fingerprints.every(row => /^[0-9a-f]{64}$/.test(row.fingerprint)));
 
   const counts = fixture.database.prepare(`
     SELECT
@@ -235,12 +308,18 @@ test('replacement and owner dispositions preserve immutable history and accepted
     text: 'Original proposal.',
     idempotencyKey: idempotencyKey('original'),
   }).point;
-  const replacement = fixture.service.replacePoint(original.id, {
+  const replacementKey = idempotencyKey('replacement');
+  const replacementInput = {
     pointType: 'REQUIREMENT',
     text: 'Replacement proposal.',
     expectedVersion: original.rowVersion,
-    idempotencyKey: idempotencyKey('replacement'),
-  }).point;
+    idempotencyKey: replacementKey,
+  };
+  const replacementResult = fixture.service.replacePoint(original.id, replacementInput);
+  const replacement = replacementResult.point;
+  const replayedReplacement = fixture.service.replacePoint(original.id, replacementInput);
+  assert.equal(replayedReplacement.replayed, true);
+  assert.equal(replayedReplacement.point.id, replacement.id);
   const rejected = fixture.service.capturePoint(message.id, {
     pointType: 'RISK',
     text: 'Rejected proposal.',
@@ -371,6 +450,107 @@ test('refuses incomplete approval without losing valid input, then locks one app
   assert.throws(() => fixture.database.prepare('UPDATE work_package_versions SET content_json = ? WHERE id = ?')
     .run(JSON.stringify(completePackageContent({ outcome: 'mutated' })), complete.id), /immutable/);
 
+  const laterAccepted = captureAndAcceptPoint(
+    fixture.service,
+    addOwnerMessage(fixture.service, discussion.id, 'Later accepted context must not replace approved lineage.').id,
+    'A later accepted point.',
+  );
+  const approvedSourceId = approved.version.sourcePointIds[0];
+  assert.equal(Number(fixture.database.prepare(`
+    SELECT COUNT(*) AS count FROM approved_package_point_snapshots WHERE work_package_version_id = ?
+  `).get(complete.id).count), 1);
+  assert.throws(() => fixture.database.prepare(`
+    UPDATE work_package_points SET planning_point_id = ?
+    WHERE work_package_version_id = ? AND planning_point_id = ?
+  `).run(laterAccepted.id, complete.id, approvedSourceId), /immutable/);
+  assert.throws(() => fixture.database.prepare(`
+    UPDATE work_package_points SET work_package_version_id = ?
+    WHERE work_package_version_id = ? AND planning_point_id = ?
+  `).run('unrelated-draft-version', complete.id, approvedSourceId), /immutable/);
+  assert.throws(() => fixture.database.prepare(`
+    UPDATE approved_package_point_snapshots SET planning_point_id = ?
+    WHERE work_package_version_id = ? AND planning_point_id = ?
+  `).run(laterAccepted.id, complete.id, approvedSourceId), /append-only/);
+
+  const emptyVersionId = 'test-empty-source-version';
+  fixture.database.prepare(`
+    INSERT INTO work_package_versions(
+      id, work_package_id, version_number, status, content_json, created_at, updated_at
+    ) VALUES (?, ?, 99, 'DRAFT', ?, ?, ?)
+  `).run(
+    emptyVersionId,
+    complete.workPackageId,
+    JSON.stringify(completePackageContent()),
+    complete.updatedAt,
+    complete.updatedAt,
+  );
+  assert.throws(() => fixture.database.prepare(`
+    UPDATE work_package_versions SET status = 'READY_FOR_EXECUTION', approved_at = ?
+    WHERE id = ?
+  `).run(complete.updatedAt, emptyVersionId), /require at least one source/);
+  fixture.database.prepare('DELETE FROM work_package_versions WHERE id = ?').run(emptyVersionId);
+  assert.throws(() => fixture.database.prepare(`
+    INSERT INTO work_package_versions(
+      id, work_package_id, version_number, status, content_json, created_at, updated_at, approved_at
+    ) VALUES (?, ?, 99, 'READY_FOR_EXECUTION', ?, ?, ?, ?)
+  `).run(
+    emptyVersionId,
+    complete.workPackageId,
+    JSON.stringify(completePackageContent()),
+    complete.updatedAt,
+    complete.updatedAt,
+    complete.updatedAt,
+  ), /require at least one source/);
+
+  fixture.database.exec('SAVEPOINT empty_lineage_tamper; DROP TRIGGER ready_versions_require_sources_update;');
+  fixture.database.prepare(`
+    INSERT INTO work_package_versions(
+      id, work_package_id, version_number, status, content_json, created_at, updated_at
+    ) VALUES (?, ?, 99, 'DRAFT', ?, ?, ?)
+  `).run(
+    emptyVersionId,
+    complete.workPackageId,
+    JSON.stringify(completePackageContent()),
+    complete.updatedAt,
+    complete.updatedAt,
+  );
+  fixture.database.prepare(`
+    UPDATE work_package_versions SET status = 'READY_FOR_EXECUTION', approved_at = ?
+    WHERE id = ?
+  `).run(complete.updatedAt, emptyVersionId);
+  fixture.database.prepare(`
+    INSERT INTO approval_events(
+      id, work_package_version_id, owner_participant_id, authorization_scope, occurred_at
+    ) VALUES ('test-empty-source-approval', ?, 'owner-local', 'Tamper-only approval.', ?)
+  `).run(emptyVersionId, complete.updatedAt);
+  assertAppError(() => fixture.service.verifyInvariants(), {
+    status: 500,
+    code: 'INVARIANT_VIOLATION',
+    message: /invariants failed/,
+    details(details) {
+      assert.ok(details.failures.some(
+        failure => failure.name === 'approved versions have at least one snapshotted source',
+      ));
+    },
+  });
+  fixture.database.exec('ROLLBACK TO empty_lineage_tamper; RELEASE empty_lineage_tamper;');
+
+  fixture.database.exec('SAVEPOINT lineage_tamper; DROP TRIGGER approved_version_points_immutable_update;');
+  fixture.database.prepare(`
+    UPDATE work_package_points SET planning_point_id = ?
+    WHERE work_package_version_id = ? AND planning_point_id = ?
+  `).run(laterAccepted.id, complete.id, approvedSourceId);
+  assertAppError(() => fixture.service.verifyInvariants(), {
+    status: 500,
+    code: 'INVARIANT_VIOLATION',
+    message: /invariants failed/,
+    details(details) {
+      assert.ok(details.failures.some(failure => failure.name === 'approved package lineage matches its approval snapshot'));
+    },
+  });
+  fixture.database.exec('ROLLBACK TO lineage_tamper; RELEASE lineage_tamper;');
+  fixture.service.verifyInvariants();
+
   const next = fixture.service.createNextPackageVersion(complete.id, {
     idempotencyKey: idempotencyKey('create-v2'),
   }).version;
@@ -463,6 +643,15 @@ test('completes concurrent deterministic agents separately and supports failure 
   }).run;
   const failed = await waitForRun(fixture.service, discussion.id, failedStart.id, 'FAILED');
   assert.equal(failed.errorCode, 'DETERMINISTIC_FAILURE');
+  assertAppError(() => fixture.service.startAgentRun(discussion.id, {
+    adapter: 'deterministic',
+    prompt: 'Forge a different retry prompt.',
+    retryOfRunId: failed.id,
+    idempotencyKey: idempotencyKey('forged-retry'),
+  }), { status: 400, code: 'VALIDATION_ERROR', message: /retry action/ });
+  assert.equal(Number(fixture.database.prepare(`
+    SELECT COUNT(*) AS count FROM agent_runs WHERE retry_of_run_id = ?
+  `).get(failed.id).count), 0);
   const retryStart = fixture.service.retryAgentRun(failed.id, {
     idempotencyKey: idempotencyKey('retry-failed-first-actor'),
   }).run;
@@ -535,5 +724,203 @@ test('sanitizes provider failures before durable storage or browser delivery', a
   assert.equal(durableText.includes(secretCanary), false);
   assert.equal(auditText.includes(secretCanary), false);
   assert.equal(JSON.stringify(fixture.service.getDiscussion(discussion.id)).includes(secretCanary), false);
+  fixture.service.verifyInvariants();
+});
+
+test('serializes provider-active Codex turns by discussion and stored thread through cancellation cleanup', async t => {
+  const sharedThreadId = 'codex-thread-shared-across-rooms';
+  let resolveFirstStarted;
+  const firstStarted = new Promise(resolve => { resolveFirstStarted = resolve; });
+  let resolveCancellationObserved;
+  const cancellationObserved = new Promise(resolve => { resolveCancellationObserved = resolve; });
+  let releaseProviderCleanup;
+  const providerCleanupAcknowledged = new Promise(resolve => { releaseProviderCleanup = resolve; });
+  const prompts = [];
+  const controlledCodexAgent = {
+    id: 'codex',
+    provider: 'openai',
+    model: 'codex-controlled-test',
+    displayName: 'Controlled Codex',
+    async contribute({ prompt, signal, onThread }) {
+      prompts.push(prompt);
+      if (prompt === 'Hold the first Codex turn open.') {
+        await onThread(sharedThreadId);
+        resolveFirstStarted();
+        await new Promise(resolve => {
+          const observeCancellation = () => {
+            resolveCancellationObserved();
+            void providerCleanupAcknowledged.then(resolve);
+          };
+          if (signal.aborted) observeCancellation();
+          else signal.addEventListener('abort', observeCancellation, { once: true });
+        });
+        const error = new Error('The controlled Codex provider acknowledged interruption.');
+        error.code = 'CANCELLED';
+        throw error;
+      }
+      return {
+        provider: 'openai',
+        model: 'codex-controlled-test',
+        content: `Completed independent Codex turn: ${prompt}`,
+      };
+    },
+  };
+  const agents = {
+    get(adapter) {
+      assert.equal(adapter, 'codex');
+      return controlledCodexAgent;
+    },
+    async capabilities() {
+      return { codex: { available: true }, deterministic: { available: false }, imported: { available: true } };
+    },
+  };
+  const fixture = await createFixture(t, { agents });
+  const { project, discussion } = await createProjectAndDiscussion(fixture, {
+    repositoryDirectory: 'codex-serialization-repository',
+    projectName: 'Codex serialization project',
+    discussionTitle: 'Primary Codex room',
+  });
+  const sharedDiscussion = fixture.service.createDiscussion(project.id, {
+    title: 'Shared-thread Codex room',
+    idempotencyKey: idempotencyKey('shared-thread-discussion'),
+  }).discussion;
+  const independentDiscussion = fixture.service.createDiscussion(project.id, {
+    title: 'Independent Codex room',
+    idempotencyKey: idempotencyKey('independent-thread-discussion'),
+  }).discussion;
+  fixture.database.prepare('UPDATE discussions SET codex_thread_id = ? WHERE id = ?')
+    .run(sharedThreadId, sharedDiscussion.id);
+  fixture.database.prepare('UPDATE discussions SET codex_thread_id = ? WHERE id = ?')
+    .run('codex-thread-independent', independentDiscussion.id);
+
+  const firstKey = idempotencyKey('serialized-first-codex-run');
+  const firstInput = {
+    adapter: 'codex',
+    prompt: 'Hold the first Codex turn open.',
+    idempotencyKey: firstKey,
+  };
+  const first = fixture.service.startAgentRun(discussion.id, firstInput).run;
+  await firstStarted;
+
+  const replayedWhileActive = fixture.service.startAgentRun(discussion.id, firstInput);
+  assert.equal(replayedWhileActive.replayed, true);
+  assert.equal(replayedWhileActive.run.id, first.id);
+  assertAppError(() => fixture.service.startAgentRun(discussion.id, {
+    adapter: 'codex',
+    prompt: 'A second same-room Codex turn must wait.',
+    idempotencyKey: idempotencyKey('same-room-overlap'),
+  }), { status: 409, code: 'CONFLICT', message: /still contributing/ });
+  assertAppError(() => fixture.service.startAgentRun(sharedDiscussion.id, {
+    adapter: 'codex',
+    prompt: 'A shared-thread Codex turn must wait.',
+    idempotencyKey: idempotencyKey('shared-thread-overlap'),
+  }), { status: 409, code: 'CONFLICT', message: /shared Codex thread/ });
+
+  const independent = fixture.service.startAgentRun(independentDiscussion.id, {
+    adapter: 'codex',
+    prompt: 'An unrelated stored Codex thread may run concurrently.',
+    idempotencyKey: idempotencyKey('independent-thread-run'),
+  }).run;
+  await waitForRun(fixture.service, independentDiscussion.id, independent.id, 'COMPLETED');
+
+  const cancellation = fixture.service.cancelAgentRun(first.id, {
+    idempotencyKey: idempotencyKey('cancel-serialized-first'),
+  });
+  assert.equal(cancellation.run.status, 'INTERRUPTED');
+  await cancellationObserved;
+  const replayedDuringCleanup = fixture.service.startAgentRun(discussion.id, firstInput);
+  assert.equal(replayedDuringCleanup.replayed, true);
+  assert.equal(replayedDuringCleanup.run.id, first.id);
+  assertAppError(() => fixture.service.startAgentRun(discussion.id, {
+    adapter: 'codex',
+    prompt: 'Do not start before interrupt acknowledgement.',
+    idempotencyKey: idempotencyKey('during-cancellation-cleanup'),
+  }), { status: 409, code: 'CONFLICT', message: /still contributing/ });
+
+  releaseProviderCleanup();
+  const laterInput = {
+    adapter: 'codex',
+    prompt: 'Start after provider cleanup settles.',
+    idempotencyKey: idempotencyKey('after-cancellation-cleanup'),
+  };
+  const cleanupDeadline = Date.now() + 2000;
+  let later;
+  while (!later && Date.now() < cleanupDeadline) {
+    try {
+      later = fixture.service.startAgentRun(discussion.id, laterInput).run;
+    } catch (error) {
+      assert.equal(error.status, 409);
+      assert.equal(error.code, 'CONFLICT');
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+  }
+  assert.ok(later, 'A later Codex turn should start after provider cleanup settles.');
+  const completedLater = await waitForRun(fixture.service, discussion.id, later.id, 'COMPLETED');
+  assert.equal(completedLater.status, 'COMPLETED');
+  assert.deepEqual(prompts, [
+    'Hold the first Codex turn open.',
+    'An unrelated stored Codex thread may run concurrently.',
+    'Start after provider cleanup settles.',
+  ]);
+  fixture.service.verifyInvariants();
+});
+
+test('graceful shutdown awaits provider cancellation before closing SQLite', async t => {
+  let resolveStarted;
+  const started = new Promise(resolve => { resolveStarted = resolve; });
+  let providerStopped = false;
+  const cancellableAgent = {
+    id: 'codex',
+    provider: 'provider-test',
+    model: 'shutdown-test',
+    displayName: 'Shutdown test provider',
+    contribute({ signal }) {
+      resolveStarted();
+      return new Promise((resolve, reject) => {
+        const stop = () => {
+          setTimeout(() => {
+            providerStopped = true;
+            const error = new Error('Provider stopped after cancellation acknowledgement.');
+            error.code = 'CANCELLED';
+            reject(error);
+          }, 35);
+        };
+        if (signal.aborted) stop();
+        else signal.addEventListener('abort', stop, { once: true });
+      });
+    },
+  };
+  const agents = {
+    get(adapter) {
+      assert.equal(adapter, 'codex');
+      return cancellableAgent;
+    },
+    async capabilities() {
+      return { codex: { available: true }, deterministic: { available: false }, imported: { available: true } };
+    },
+  };
+  const fixture = await createFixture(t, { agents });
+  const { discussion } = await createProjectAndDiscussion(fixture, {
+    repositoryDirectory: 'shutdown-repository',
+    projectName: 'Shutdown project',
+    discussionTitle: 'Shutdown room',
+  });
+  const run = fixture.service.startAgentRun(discussion.id, {
+    adapter: 'codex',
+    prompt: 'Wait until graceful shutdown interrupts this provider.',
+    idempotencyKey: idempotencyKey('shutdown-run'),
+  }).run;
+  await started;
+
+  const beganClosingAt = Date.now();
+  await fixture.close();
+  assert.equal(providerStopped, true);
+  assert.ok(Date.now() - beganClosingAt >= 30);
+
+  await fixture.open();
+  const restored = fixture.service.getDiscussion(discussion.id).runs.find(candidate => candidate.id === run.id);
+  assert.equal(restored.status, 'INTERRUPTED');
+  assert.equal(restored.errorCode, 'SERVICE_SHUTDOWN');
+  assert.equal(restored.errorMessage, 'The local service stopped before this contribution completed. Retry is available.');
   fixture.service.verifyInvariants();
 });

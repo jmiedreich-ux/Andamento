@@ -8,14 +8,16 @@ Development work follows [AGENTS.md](AGENTS.md), adapted from the proven VennuSi
 
 ## Run Locally
 
-Andamento requires Node.js 24 or newer. From the repository root:
+Andamento requires Node.js 24 or newer and the Git CLI on `PATH`. From the repository root:
 
 ```text
 npm install
 npm start
 ```
 
-Open `http://127.0.0.1:47831`. The local service creates `var/andamento.db`, applies ordered migrations, enables SQLite WAL mode, and keeps the browser away from database and provider credentials.
+Open `http://127.0.0.1:47831`. The service is intentionally loopback-only. It creates `var/andamento.db`, applies ordered migrations, enables SQLite WAL mode, and keeps the browser away from database and provider credentials. Run only one Andamento service against a given SQLite file; a second instance is safely refused.
+
+When registering a project, select a path inside a real local Git repository. Andamento resolves and stores that repository's canonical root and revalidates it before asking an agent to contribute.
 
 Rerun the implementation and browser gates with:
 

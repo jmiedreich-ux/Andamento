@@ -23,7 +23,10 @@ function key(label) {
 async function fixtureRepository(label) {
   const safeLabel = String(label).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   const root = path.resolve('var', 'e2e-repositories', safeLabel || `repository-${sequence}`);
-  await mkdir(path.join(root, '.git'), { recursive: true });
+  await mkdir(root, { recursive: true });
+  const initialized = spawn('git', ['init', '--quiet', root], { stdio: 'ignore' });
+  const [code] = await once(initialized, 'exit');
+  if (code !== 0) throw new Error(`Could not initialize end-to-end Git repository ${root}.`);
   return root;
 }
 

@@ -1,12 +1,16 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { promisify } from 'node:util';
 
 import { createApplication } from '../../server/application.mjs';
 import { PlanningService } from '../../server/planning-service.mjs';
+
+const execFileAsync = promisify(execFile);
 
 export function idempotencyKey(label) {
   return `${label}:${randomUUID()}`;
@@ -56,6 +60,18 @@ export async function createFixture(t, options = {}) {
 
   async function makeRepository(name = `repository-${randomUUID()}`) {
     const repositoryRoot = path.join(root, name);
+    await mkdir(repositoryRoot, { recursive: true });
+    await execFileAsync('git', ['init', '--quiet', repositoryRoot], {
+      encoding: 'utf8',
+      maxBuffer: 4096,
+      timeout: 5000,
+      windowsHide: true,
+    });
+    return repositoryRoot;
+  }
+
+  async function makeFakeRepository(name = `fake-repository-${randomUUID()}`) {
+    const repositoryRoot = path.join(root, name);
     await mkdir(path.join(repositoryRoot, '.git'), { recursive: true });
     return repositoryRoot;
   }
@@ -95,6 +111,7 @@ export async function createFixture(t, options = {}) {
     open,
     close,
     makeRepository,
+    makeFakeRepository,
     makeNonRepository,
     makeFile,
   };

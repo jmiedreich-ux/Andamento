@@ -12,6 +12,44 @@ function abortedError() {
   return error;
 }
 
+function contributionTimeoutError() {
+  const error = new Error('Codex exceeded the three-minute planning timeout.');
+  error.code = 'CODEX_TIMEOUT';
+  return error;
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw abortedError();
+}
+
+function waitWithAbort(promise, signal) {
+  if (!signal) return Promise.resolve(promise);
+  if (signal.aborted) return Promise.reject(abortedError());
+
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener('abort', onAbort);
+      reject(abortedError());
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    Promise.resolve(promise).then(
+      value => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      error => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+async function requestWithAbort(connection, method, params, { signal, timeoutMs } = {}) {
+  throwIfAborted(signal);
+  return waitWithAbort(connection.request(method, params, { signal, timeoutMs }), signal);
+}
+
 export async function probeWebSocket(url, { timeoutMs = 900 } = {}) {
   return new Promise(resolve => {
     let settled = false;
@@ -40,23 +78,41 @@ class AppServerConnection {
   }
 
   async open() {
-    if (this.signal?.aborted) throw abortedError();
+    throwIfAborted(this.signal);
     await new Promise((resolve, reject) => {
       const socket = new WebSocket(this.url);
       this.socket = socket;
-      const timeout = setTimeout(() => reject(new Error('Timed out connecting to the local Codex bridge.')), 5000);
-      const onAbort = () => reject(abortedError());
-      this.signal?.addEventListener('abort', onAbort, { once: true });
-      socket.addEventListener('open', () => {
+      let settled = false;
+      const timeout = setTimeout(() => finish(new Error('Timed out connecting to the local Codex bridge.')), 5000);
+      const onAbort = () => finish(abortedError());
+      const onOpen = () => finish();
+      const onError = () => finish(new Error('Unable to connect to the local Codex bridge.'));
+      const onEarlyClose = () => finish(new Error('Unable to connect to the local Codex bridge.'));
+
+      const cleanup = () => {
         clearTimeout(timeout);
         this.signal?.removeEventListener('abort', onAbort);
+        socket.removeEventListener('open', onOpen);
+        socket.removeEventListener('error', onError);
+        socket.removeEventListener('close', onEarlyClose);
+      };
+      function finish(error) {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (error) {
+          try { socket.close(); } catch {}
+          reject(error);
+          return;
+        }
         resolve();
-      }, { once: true });
+      }
+
+      this.signal?.addEventListener('abort', onAbort, { once: true });
+      socket.addEventListener('open', onOpen, { once: true });
+      socket.addEventListener('error', onError, { once: true });
+      socket.addEventListener('close', onEarlyClose, { once: true });
       socket.addEventListener('message', event => this.handle(String(event.data)));
-      socket.addEventListener('error', () => {
-        clearTimeout(timeout);
-        reject(new Error('Unable to connect to the local Codex bridge.'));
-      }, { once: true });
       socket.addEventListener('close', () => this.failPending(new Error('Codex App Server connection closed.')));
     });
   }
@@ -68,18 +124,39 @@ class AppServerConnection {
     this.socket.send(JSON.stringify(message));
   }
 
-  request(method, params, timeoutMs = 30000) {
+  request(method, params, options = {}) {
+    if (typeof options === 'number') options = { timeoutMs: options };
+    const { timeoutMs = 30000, signal = this.signal } = options;
+    if (signal?.aborted) return Promise.reject(abortedError());
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
+      let settled = false;
+      const cleanup = () => {
+        clearTimeout(timeout);
+        signal?.removeEventListener('abort', onAbort);
         this.pending.delete(id);
-        reject(new Error(`Codex App Server request ${method} timed out.`));
-      }, timeoutMs);
+      };
+      const settle = (handler, value) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        handler(value);
+      };
+      const onAbort = () => settle(reject, abortedError());
+      const timeout = setTimeout(
+        () => settle(reject, new Error(`Codex App Server request ${method} timed out.`)),
+        timeoutMs,
+      );
       this.pending.set(id, {
-        resolve: value => { clearTimeout(timeout); resolve(value); },
-        reject: error => { clearTimeout(timeout); reject(error); },
+        resolve: value => settle(resolve, value),
+        reject: error => settle(reject, error),
       });
-      this.send({ id, method, params });
+      signal?.addEventListener('abort', onAbort, { once: true });
+      try {
+        this.send({ id, method, params });
+      } catch (error) {
+        settle(reject, error);
+      }
     });
   }
 
@@ -108,13 +185,22 @@ class AppServerConnection {
   }
 
   close() {
+    this.failPending(new Error('Codex App Server connection closed.'));
     try { this.socket?.close(); } catch {}
   }
 }
 
 export class CodexPlanningAgent {
-  constructor({ url }) {
+  constructor({
+    url,
+    connectionFactory = (connectionUrl, signal) => new AppServerConnection(connectionUrl, signal),
+    contributionTimeoutMs = 180000,
+    interruptTimeoutMs = 5000,
+  }) {
     this.url = url;
+    this.connectionFactory = connectionFactory;
+    this.contributionTimeoutMs = contributionTimeoutMs;
+    this.interruptTimeoutMs = interruptTimeoutMs;
     this.id = 'codex';
     this.provider = 'openai';
     this.model = 'codex-local';
@@ -126,41 +212,52 @@ export class CodexPlanningAgent {
   }
 
   async contribute({ prompt, repositoryRoot, threadId, onThread, signal }) {
-    const connection = new AppServerConnection(this.url, signal);
+    const connection = this.connectionFactory(this.url, signal);
     let activeThreadId = threadId;
     let activeTurnId = '';
+    let turnTerminal = false;
+    let contributionTimeoutId;
+    let removeListener = () => {};
     try {
-      await connection.open();
-      await connection.request('initialize', {
+      throwIfAborted(signal);
+      await waitWithAbort(connection.open(), signal);
+      await requestWithAbort(connection, 'initialize', {
         clientInfo: { name: 'andamento', title: 'Andamento', version: '0.1.0' },
         capabilities: { experimentalApi: true, requestAttestation: false },
-      });
+      }, { signal });
+      throwIfAborted(signal);
       connection.send({ method: 'initialized' });
 
       if (activeThreadId) {
         try {
-          await connection.request('thread/resume', {
+          await requestWithAbort(connection, 'thread/resume', {
             threadId: activeThreadId,
             cwd: repositoryRoot,
             approvalPolicy: 'never',
             sandbox: 'read-only',
-          });
-        } catch {
+          }, { signal });
+        } catch (error) {
+          if (signal?.aborted || error?.code === 'CANCELLED') throw abortedError();
           activeThreadId = '';
         }
       }
       if (!activeThreadId) {
-        const started = await connection.request('thread/start', {
+        const started = await requestWithAbort(connection, 'thread/start', {
           cwd: repositoryRoot,
           approvalPolicy: 'never',
           sandbox: 'read-only',
           serviceName: 'andamento-planning',
           baseInstructions: BASE_INSTRUCTIONS,
           ephemeral: false,
-        });
+        }, { signal });
         activeThreadId = started.thread.id;
-        await connection.request('thread/name/set', { threadId: activeThreadId, name: 'Andamento planning room' });
-        await onThread(activeThreadId);
+        await requestWithAbort(
+          connection,
+          'thread/name/set',
+          { threadId: activeThreadId, name: 'Andamento planning room' },
+          { signal },
+        );
+        await waitWithAbort(onThread(activeThreadId), signal);
       }
 
       let finalMessage = '';
@@ -170,58 +267,139 @@ export class CodexPlanningAgent {
         resolveCompletion = resolve;
         rejectCompletion = reject;
       });
-      const removeListener = connection.onMessage(message => {
+      let resolveTurnIdentity;
+      const turnIdentity = new Promise(resolve => {
+        resolveTurnIdentity = resolve;
+      });
+      const contributionDeadline = new Promise((_, reject) => {
+        contributionTimeoutId = setTimeout(
+          () => reject(contributionTimeoutError()),
+          this.contributionTimeoutMs,
+        );
+      });
+      let turnStartIssued = false;
+      removeListener = connection.onMessage(message => {
+        if (message.method === 'turn/started') {
+          const { threadId: notificationThreadId, turn } = message.params || {};
+          if (
+            !turnStartIssued
+            || notificationThreadId !== activeThreadId
+            || typeof turn?.id !== 'string'
+            || !turn.id
+            || (activeTurnId && activeTurnId !== turn.id)
+          ) return;
+          activeTurnId = turn.id;
+          resolveTurnIdentity(turn.id);
+          return;
+        }
         if (message.method === 'item/completed') {
-          const item = message.params?.item;
+          const { threadId: notificationThreadId, turnId, item } = message.params || {};
+          if (
+            notificationThreadId !== activeThreadId
+            || !activeTurnId
+            || turnId !== activeTurnId
+          ) return;
           if (item?.type === 'agentMessage') finalMessage = item.text || finalMessage;
+          return;
         }
         if (message.method === 'turn/completed') {
-          const turn = message.params?.turn;
-          if (!turn || (activeTurnId && turn.id !== activeTurnId)) return;
+          const { threadId: notificationThreadId, turn } = message.params || {};
+          if (
+            notificationThreadId !== activeThreadId
+            || !activeTurnId
+            || turn?.id !== activeTurnId
+          ) return;
+          turnTerminal = true;
           if (turn.status === 'completed') resolveCompletion(finalMessage || 'Codex completed without a text contribution.');
           else rejectCompletion(new Error(`Codex could not complete the planning turn (${turn.status || 'unknown status'}).`));
         }
       });
 
-      const startedTurn = await connection.request('turn/start', {
+      throwIfAborted(signal);
+      turnStartIssued = true;
+      const turnStart = Promise.resolve(connection.request('turn/start', {
         threadId: activeThreadId,
         input: [{ type: 'text', text: prompt }],
         cwd: repositoryRoot,
         approvalPolicy: 'never',
         sandboxPolicy: { type: 'readOnly', networkAccess: false },
-      });
-      activeTurnId = startedTurn.turn.id;
-
-      let timeoutId;
-      let removeAbortListener = () => {};
-      const timeout = new Promise((_, reject) => {
-        timeoutId = setTimeout(() => reject(new Error('Codex exceeded the three-minute planning timeout.')), 180000);
-      });
-      const cancellation = new Promise((_, reject) => {
-        if (!signal) return;
-        const onAbort = () => reject(abortedError());
-        if (signal.aborted) onAbort();
-        else {
-          signal.addEventListener('abort', onAbort, { once: true });
-          removeAbortListener = () => signal.removeEventListener('abort', onAbort);
+      }, {
+        signal: null,
+        timeoutMs: Math.max(
+          this.contributionTimeoutMs + this.interruptTimeoutMs + 1000,
+          30000,
+        ),
+      }));
+      const turnStartResult = turnStart.then(startedTurn => {
+        const turnId = startedTurn?.turn?.id;
+        if (typeof turnId !== 'string' || !turnId) {
+          throw new Error('The local Codex bridge returned an invalid turn start response.');
         }
+        return { source: 'response', turnId };
       });
-      const content = await Promise.race([completion, timeout, cancellation]).finally(() => {
-        clearTimeout(timeoutId);
-        removeAbortListener();
-      });
-      removeListener();
+      try {
+        const acceptedTurn = await waitWithAbort(Promise.race([
+          turnStartResult,
+          turnIdentity.then(turnId => ({ source: 'notification', turnId })),
+          contributionDeadline,
+        ]), signal);
+        if (activeTurnId && activeTurnId !== acceptedTurn.turnId) {
+          throw new Error('The local Codex bridge returned inconsistent turn identity.');
+        }
+        activeTurnId = acceptedTurn.turnId;
+        resolveTurnIdentity(activeTurnId);
+      } catch (error) {
+        if (!activeTurnId) {
+          let identityTimeoutId;
+          const boundedIdentityWait = new Promise(resolve => {
+            identityTimeoutId = setTimeout(
+              () => resolve(''),
+              Math.max(1, Math.min(this.interruptTimeoutMs, 500)),
+            );
+          });
+          const lateResponseIdentity = new Promise(resolve => {
+            turnStart.then(startedTurn => {
+              const turnId = startedTurn?.turn?.id;
+              if (typeof turnId === 'string' && turnId) resolve(turnId);
+            }, () => {});
+          });
+          activeTurnId = await Promise.race([
+            turnIdentity,
+            lateResponseIdentity,
+            boundedIdentityWait,
+          ]).finally(() => clearTimeout(identityTimeoutId));
+        }
+        throw error;
+      }
+      throwIfAborted(signal);
+
+      const content = await waitWithAbort(Promise.race([completion, contributionDeadline]), signal);
       return { provider: this.provider, model: this.model, content };
     } catch (error) {
-      if (signal?.aborted) {
-        if (activeThreadId && activeTurnId) {
-          await connection.request('turn/interrupt', { threadId: activeThreadId, turnId: activeTurnId }, 5000).catch(() => {});
-        }
+      const failure = error instanceof Error
+        ? error
+        : new Error('Codex could not complete the planning contribution.');
+      const cancelled = signal?.aborted || failure.code === 'CANCELLED';
+      const timedOut = failure.code === 'CODEX_TIMEOUT';
+      if (activeThreadId && activeTurnId && !turnTerminal) {
+        const interruptController = new AbortController();
+        const interruptDeadline = setTimeout(() => interruptController.abort(), this.interruptTimeoutMs);
+        await requestWithAbort(connection, 'turn/interrupt', {
+          threadId: activeThreadId,
+          turnId: activeTurnId,
+        }, {
+          signal: interruptController.signal,
+          timeoutMs: this.interruptTimeoutMs,
+        }).catch(() => {}).finally(() => clearTimeout(interruptDeadline));
+      }
+      if (cancelled) {
         throw abortedError();
       }
-      error.code ||= 'CODEX_FAILURE';
-      throw error;
+      failure.code ||= 'CODEX_FAILURE';
+      throw failure;
     } finally {
+      clearTimeout(contributionTimeoutId);
+      removeListener();
       connection.close();
     }
   }

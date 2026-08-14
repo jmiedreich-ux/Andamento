@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { access, realpath, stat } from 'node:fs/promises';
-import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { realpath, stat } from 'node:fs/promises';
+import { promisify } from 'node:util';
 import {
   AppError,
   capabilityUnavailable,
@@ -28,9 +29,12 @@ const POINT_DECISIONS = ['ACCEPTED', 'REJECTED', 'DEFERRED'];
 const SAFE_AGENT_FAILURES = new Map([
   ['CANCELLED', 'The owner cancelled this contribution.'],
   ['CODEX_FAILURE', 'Codex could not complete this contribution. Retry is available.'],
+  ['CODEX_TIMEOUT', 'Codex exceeded the planning time limit and was interrupted. Retry is available.'],
   ['DETERMINISTIC_FAILURE', 'The planning participant could not complete this attempt. Retry is available.'],
   ['MALFORMED_CONTRIBUTION', 'The participant returned an unusable contribution.'],
+  ['REPOSITORY_UNAVAILABLE', 'The registered Git repository is no longer available. Restore it before retrying.'],
 ]);
+const execFileAsync = promisify(execFile);
 
 function safeAgentFailure(error) {
   const requestedCode = String(error?.code || '').toUpperCase();
@@ -162,16 +166,23 @@ function mapPackageVersion(row) {
 
 async function validateRepositoryRoot(input) {
   const requested = requiredText(input, 'Repository root', { max: 1000 });
-  let resolved;
   try {
-    resolved = await realpath(requested);
+    const resolved = await realpath(requested);
     const info = await stat(resolved);
     if (!info.isDirectory()) throw new Error('not-directory');
-    await access(path.join(resolved, '.git'));
+    const { stdout } = await execFileAsync('git', ['-C', resolved, 'rev-parse', '--show-toplevel'], {
+      encoding: 'utf8',
+      maxBuffer: 4096,
+      timeout: 5000,
+      windowsHide: true,
+    });
+    const repositoryRoot = await realpath(String(stdout).trim());
+    const repositoryInfo = await stat(repositoryRoot);
+    if (!repositoryInfo.isDirectory()) throw new Error('not-directory');
+    return repositoryRoot;
   } catch {
     throw validationError('Repository root must be an existing local Git repository.', { field: 'repositoryRoot' });
   }
-  return resolved;
 }
 
 export class PlanningService {
@@ -181,6 +192,7 @@ export class PlanningService {
     this.testMode = testMode;
     this.activeRuns = new Map();
     this.shuttingDown = false;
+    this.shutdownPromise = null;
   }
 
   async bootstrap() {
@@ -214,7 +226,11 @@ export class PlanningService {
     const name = requiredText(input.name, 'Project name', { max: 80 });
     const repositoryRoot = await validateRepositoryRoot(input.repositoryRoot);
     const idempotencyKey = requiredIdempotencyKey(input.idempotencyKey);
-    const { value, replayed } = mutation(this.database, { idempotencyKey, operation: 'project.create' }, () => {
+    const { value, replayed } = mutation(this.database, {
+      idempotencyKey,
+      operation: 'project.create',
+      request: { name, repositoryRoot },
+    }, () => {
       const id = randomUUID();
       const createdAt = now();
       this.database.prepare(`
@@ -244,7 +260,11 @@ export class PlanningService {
     this.requireProject(normalizedProjectId);
     const title = requiredText(input.title, 'Planning room title', { max: 120 });
     const idempotencyKey = requiredIdempotencyKey(input.idempotencyKey);
-    const { value, replayed } = mutation(this.database, { idempotencyKey, operation: 'discussion.create' }, () => {
+    const { value, replayed } = mutation(this.database, {
+      idempotencyKey,
+      operation: 'discussion.create',
+      request: { projectId: normalizedProjectId, title },
+    }, () => {
       const id = randomUUID();
       const createdAt = now();
       this.database.prepare(`
@@ -277,7 +297,17 @@ export class PlanningService {
       participant = { kind: 'IMPORTED', displayName, provider, model };
     }
 
-    const { value, replayed } = mutation(this.database, { idempotencyKey, operation: 'message.create' }, () => {
+    const { value, replayed } = mutation(this.database, {
+      idempotencyKey,
+      operation: 'message.create',
+      request: {
+        discussionId: normalizedDiscussionId,
+        actorId,
+        contributionType,
+        content,
+        participant,
+      },
+    }, () => {
       const storedParticipant = contributionType === 'OWNER'
         ? participant
         : this.ensureParticipant({
@@ -310,6 +340,13 @@ export class PlanningService {
   }
 
   startAgentRun(discussionId, input, actorId = OWNER_ID) {
+    if (Object.hasOwn(input, 'retryOfRunId')) {
+      throw validationError('Use the retry action to retry an existing contribution.', { field: 'retryOfRunId' });
+    }
+    return this.startAgentRunInternal(discussionId, input, actorId, null);
+  }
+
+  startAgentRunInternal(discussionId, input, actorId, retryOfRunId) {
     this.assertOwner(actorId);
     const normalizedDiscussionId = requiredId(discussionId, 'Discussion');
     const context = this.requireDiscussionContext(normalizedDiscussionId);
@@ -317,25 +354,53 @@ export class PlanningService {
     const adapter = this.agents.get(adapterName);
     const prompt = requiredText(input.prompt, 'Agent prompt', { max: 12000 });
     const idempotencyKey = requiredIdempotencyKey(input.idempotencyKey);
-    const retryOfRunId = input.retryOfRunId ? requiredId(input.retryOfRunId, 'Retry run') : null;
-    const participant = this.ensureParticipantOutsideMutation({
+    const normalizedRetryId = retryOfRunId ? requiredId(retryOfRunId, 'Retry run') : null;
+    const participantIdentity = {
       participantKey: `agent:${adapter.provider}:${adapter.model}:${adapter.id}`,
       kind: 'AGENT',
       displayName: adapter.displayName,
       provider: adapter.provider,
       model: adapter.model,
-    });
+    };
 
-    const { value, replayed } = mutation(this.database, { idempotencyKey, operation: 'agent-run.start' }, () => {
-      if (retryOfRunId) {
-        const prior = this.requireRun(retryOfRunId);
+    const { value, replayed } = mutation(this.database, {
+      idempotencyKey,
+      operation: 'agent-run.start',
+      request: {
+        discussionId: normalizedDiscussionId,
+        actorId,
+        adapter: adapterName,
+        prompt,
+        retryOfRunId: normalizedRetryId || '',
+      },
+    }, () => {
+      if (normalizedRetryId) {
+        const prior = this.requireRun(normalizedRetryId);
         if (prior.discussionId !== normalizedDiscussionId) throw conflict('The retry source belongs to a different planning room.');
         if (!['FAILED', 'INTERRUPTED'].includes(prior.status)) throw conflict('Only a failed or interrupted contribution can be retried.');
         const existingRetry = this.database.prepare(`
           SELECT id FROM agent_runs WHERE retry_of_run_id = ? ORDER BY started_at, id LIMIT 1
-        `).get(retryOfRunId);
-        if (existingRetry) return this.requireRun(existingRetry.id);
+        `).get(normalizedRetryId);
+        if (existingRetry) {
+          const existing = this.requireRun(existingRetry.id);
+          if (
+            existing.discussionId !== prior.discussionId
+            || existing.adapter !== prior.adapter
+            || existing.prompt !== prior.prompt
+          ) {
+            throw new AppError(500, 'INVARIANT_VIOLATION', 'Saved retry lineage does not match its source contribution.');
+          }
+          return existing;
+        }
       }
+      if (adapterName === 'codex') {
+        // Exact idempotency replays bypass the mutation callback and must remain replayable.
+        this.assertCodexTurnAvailable({
+          discussionId: normalizedDiscussionId,
+          threadId: context.codexThreadId,
+        });
+      }
+      const participant = this.ensureParticipant(participantIdentity);
       const run = {
         id: randomUUID(),
         discussionId: normalizedDiscussionId,
@@ -347,7 +412,7 @@ export class PlanningService {
         status: 'RUNNING',
         errorCode: '',
         errorMessage: '',
-        retryOfRunId: retryOfRunId || '',
+        retryOfRunId: normalizedRetryId || '',
         startedAt: now(),
         completedAt: '',
         rowVersion: 1,
@@ -357,24 +422,33 @@ export class PlanningService {
           id, discussion_id, participant_id, adapter, provider, model, prompt, status,
           retry_of_run_id, started_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, 'RUNNING', ?, ?)
-      `).run(run.id, run.discussionId, run.participantId, run.adapter, run.provider, run.model, run.prompt, retryOfRunId, run.startedAt);
+      `).run(run.id, run.discussionId, run.participantId, run.adapter, run.provider, run.model, run.prompt, normalizedRetryId, run.startedAt);
       this.touchDiscussion(normalizedDiscussionId, run.startedAt);
       appendAudit(this.database, {
         eventType: 'AGENT_RUN_STARTED', resourceType: 'AGENT_RUN', resourceId: run.id, actorId,
-        details: { discussionId: normalizedDiscussionId, adapter: adapterName, retryOfRunId },
+        details: { discussionId: normalizedDiscussionId, adapter: adapterName, retryOfRunId: normalizedRetryId },
       });
       return run;
     });
 
     if (!replayed && value.status === 'RUNNING' && !this.activeRuns.has(value.id)) {
       const controller = new AbortController();
-      this.activeRuns.set(value.id, controller);
-      void this.completeAgentRun({
+      const activeRun = {
+        controller,
+        completion: null,
+        discussionId: value.discussionId,
+        adapter: value.adapter,
+        threadId: context.codexThreadId || '',
+      };
+      this.activeRuns.set(value.id, activeRun);
+      const completion = this.completeAgentRun({
         run: value,
         adapter,
         context,
         controller,
       });
+      activeRun.completion = completion;
+      void completion;
     }
     return { run: value, replayed };
   }
@@ -385,19 +459,22 @@ export class PlanningService {
     if (!['FAILED', 'INTERRUPTED'].includes(prior.status)) {
       throw conflict('Only a failed or interrupted contribution can be retried.');
     }
-    return this.startAgentRun(prior.discussionId, {
+    return this.startAgentRunInternal(prior.discussionId, {
       adapter: prior.adapter,
       prompt: prior.prompt,
-      retryOfRunId: prior.id,
       idempotencyKey: input.idempotencyKey,
-    }, actorId);
+    }, actorId, prior.id);
   }
 
   cancelAgentRun(runId, input, actorId = OWNER_ID) {
     this.assertOwner(actorId);
     const normalizedRunId = requiredId(runId, 'Agent run');
     const idempotencyKey = requiredIdempotencyKey(input.idempotencyKey);
-    const { value, replayed } = mutation(this.database, { idempotencyKey, operation: 'agent-run.cancel' }, () => {
+    const { value, replayed } = mutation(this.database, {
+      idempotencyKey,
+      operation: 'agent-run.cancel',
+      request: { runId: normalizedRunId, actorId },
+    }, () => {
       const run = this.requireRun(normalizedRunId);
       if (run.status !== 'RUNNING') return run;
       const completedAt = now();
@@ -413,20 +490,31 @@ export class PlanningService {
       });
       return this.requireRun(normalizedRunId);
     });
-    this.activeRuns.get(normalizedRunId)?.abort();
+    this.activeRuns.get(normalizedRunId)?.controller.abort();
     return { run: value, replayed };
   }
 
   async completeAgentRun({ run, adapter, context, controller }) {
     try {
+      let repositoryRoot;
+      try {
+        repositoryRoot = await validateRepositoryRoot(context.repositoryRoot);
+        if (repositoryRoot !== context.repositoryRoot) throw new Error('repository-root-changed');
+      } catch {
+        const error = new Error('The registered repository is unavailable.');
+        error.code = 'REPOSITORY_UNAVAILABLE';
+        throw error;
+      }
       const contribution = await adapter.contribute({
         prompt: run.prompt,
-        repositoryRoot: context.repositoryRoot,
+        repositoryRoot,
         threadId: context.codexThreadId,
         retryOfRunId: run.retryOfRunId || '',
         signal: controller.signal,
         onThread: async threadId => {
           if (this.shuttingDown) return;
+          const activeRun = this.activeRuns.get(run.id);
+          if (activeRun) activeRun.threadId = threadId;
           transaction(this.database, () => {
             this.database.prepare(`
               UPDATE discussions SET codex_thread_id = ?, updated_at = ?, row_version = row_version + 1
@@ -485,7 +573,11 @@ export class PlanningService {
     const pointType = oneOf(input.pointType, POINT_TYPES, 'Planning-point type');
     const text = requiredText(input.text, 'Planning point', { max: 2000 });
     const idempotencyKey = requiredIdempotencyKey(input.idempotencyKey);
-    const { value, replayed } = mutation(this.database, { idempotencyKey, operation: 'planning-point.capture' }, () => {
+    const { value, replayed } = mutation(this.database, {
+      idempotencyKey,
+      operation: 'planning-point.capture',
+      request: { messageId: source.id, actorId, pointType, text },
+    }, () => {
       const point = {
         id: randomUUID(),
         discussionId: source.discussionId,
@@ -518,19 +610,22 @@ export class PlanningService {
   replacePoint(pointId, input, actorId = OWNER_ID) {
     this.assertOwner(actorId);
     const original = this.requirePoint(requiredId(pointId, 'Planning point'));
-    if (original.disposition !== 'PROPOSED') {
-      throw conflict('A decided planning point is immutable. Create a new proposal from its source instead.');
-    }
     const pointType = oneOf(input.pointType || original.pointType, POINT_TYPES, 'Planning-point type');
     const text = requiredText(input.text, 'Planning point', { max: 2000 });
     const version = expectedVersion(input.expectedVersion);
     const idempotencyKey = requiredIdempotencyKey(input.idempotencyKey);
-    const { value, replayed } = mutation(this.database, { idempotencyKey, operation: 'planning-point.replace' }, () => {
+    const { value, replayed } = mutation(this.database, {
+      idempotencyKey,
+      operation: 'planning-point.replace',
+      request: { pointId: original.id, actorId, pointType, text, expectedVersion: version },
+    }, () => {
       const current = this.requirePoint(original.id);
       if (current.rowVersion !== version) {
         throw conflict('This planning point changed in another view.', { current });
       }
-      if (current.disposition !== 'PROPOSED') throw conflict('This planning point was already decided.', { current });
+      if (current.disposition !== 'PROPOSED') {
+        throw conflict('A decided planning point is immutable. Create a new proposal from its source instead.', { current });
+      }
       const createdAt = now();
       this.database.prepare(`
         UPDATE planning_points
@@ -572,7 +667,11 @@ export class PlanningService {
     const disposition = oneOf(input.disposition, POINT_DECISIONS, 'Disposition');
     const version = expectedVersion(input.expectedVersion);
     const idempotencyKey = requiredIdempotencyKey(input.idempotencyKey);
-    const { value, replayed } = mutation(this.database, { idempotencyKey, operation: 'planning-point.disposition' }, () => {
+    const { value, replayed } = mutation(this.database, {
+      idempotencyKey,
+      operation: 'planning-point.disposition',
+      request: { pointId: normalizedPointId, actorId, disposition, expectedVersion: version },
+    }, () => {
       const current = this.requirePoint(normalizedPointId);
       if (current.rowVersion !== version) throw conflict('This planning point changed in another view.', { current });
       if (current.disposition !== 'PROPOSED') throw conflict('This planning point was already decided.', { current });
@@ -597,7 +696,11 @@ export class PlanningService {
     const normalizedDiscussionId = requiredId(discussionId, 'Discussion');
     this.requireDiscussion(normalizedDiscussionId);
     const idempotencyKey = requiredIdempotencyKey(input.idempotencyKey);
-    const { value, replayed } = mutation(this.database, { idempotencyKey, operation: 'work-package.prepare' }, () => {
+    const { value, replayed } = mutation(this.database, {
+      idempotencyKey,
+      operation: 'work-package.prepare',
+      request: { discussionId: normalizedDiscussionId, actorId },
+    }, () => {
       const existingDraft = this.findDraftVersion(normalizedDiscussionId);
       if (existingDraft) return existingDraft;
       const acceptedPoints = this.database.prepare(`
@@ -665,7 +768,11 @@ export class PlanningService {
     const version = expectedVersion(input.expectedVersion);
     const content = packageContent(input.content);
     const idempotencyKey = requiredIdempotencyKey(input.idempotencyKey);
-    const { value, replayed } = mutation(this.database, { idempotencyKey, operation: 'work-package.update' }, () => {
+    const { value, replayed } = mutation(this.database, {
+      idempotencyKey,
+      operation: 'work-package.update',
+      request: { versionId: normalizedVersionId, actorId, expectedVersion: version, content },
+    }, () => {
       const current = this.requirePackageVersion(normalizedVersionId);
       if (current.status !== 'DRAFT') throw conflict('Approved work-package versions are immutable.', { current });
       if (current.rowVersion !== version) throw conflict('This package changed in another view.', { current });
@@ -690,7 +797,11 @@ export class PlanningService {
     const normalizedVersionId = requiredId(versionId, 'Work-package version');
     const version = expectedVersion(input.expectedVersion);
     const idempotencyKey = requiredIdempotencyKey(input.idempotencyKey);
-    const { value, replayed } = mutation(this.database, { idempotencyKey, operation: 'work-package.approve' }, () => {
+    const { value, replayed } = mutation(this.database, {
+      idempotencyKey,
+      operation: 'work-package.approve',
+      request: { versionId: normalizedVersionId, actorId, expectedVersion: version },
+    }, () => {
       const current = this.requirePackageVersion(normalizedVersionId);
       const existingApproval = this.database.prepare(`
         SELECT id, owner_participant_id AS ownerParticipantId, authorization_scope AS authorizationScope,
@@ -736,6 +847,12 @@ export class PlanningService {
         INSERT INTO approval_events(id, work_package_version_id, owner_participant_id, authorization_scope, occurred_at)
         VALUES (?, ?, ?, ?, ?)
       `).run(approval.id, approval.workPackageVersionId, approval.ownerParticipantId, approval.authorizationScope, approval.occurredAt);
+      const snapshot = this.database.prepare(`
+        INSERT INTO approved_package_point_snapshots(
+          work_package_version_id, planning_point_id, captured_at
+        ) VALUES (?, ?, ?)
+      `);
+      for (const pointId of current.sourcePointIds) snapshot.run(normalizedVersionId, pointId, approvedAt);
       appendAudit(this.database, {
         eventType: 'WORK_PACKAGE_VERSION_APPROVED', resourceType: 'WORK_PACKAGE_VERSION', resourceId: normalizedVersionId, actorId,
         details: { approvalId: approval.id, sourceCount },
@@ -750,7 +867,11 @@ export class PlanningService {
     this.assertOwner(actorId);
     const normalizedVersionId = requiredId(versionId, 'Work-package version');
     const idempotencyKey = requiredIdempotencyKey(input.idempotencyKey);
-    const { value, replayed } = mutation(this.database, { idempotencyKey, operation: 'work-package.new-version' }, () => {
+    const { value, replayed } = mutation(this.database, {
+      idempotencyKey,
+      operation: 'work-package.new-version',
+      request: { versionId: normalizedVersionId, actorId },
+    }, () => {
       const source = this.requirePackageVersion(normalizedVersionId);
       if (source.status !== 'READY_FOR_EXECUTION') throw conflict('Create the next draft from an approved package version.');
       const existing = this.database.prepare(`
@@ -905,6 +1026,35 @@ export class PlanningService {
               WHERE wp.discussion_id <> pp.discussion_id`,
       },
       {
+        name: 'approved package lineage matches its approval snapshot',
+        sql: `SELECT wpv.id FROM work_package_versions wpv
+              WHERE wpv.status = 'READY_FOR_EXECUTION' AND (
+                EXISTS (
+                  SELECT planning_point_id FROM work_package_points WHERE work_package_version_id = wpv.id
+                  EXCEPT
+                  SELECT planning_point_id FROM approved_package_point_snapshots WHERE work_package_version_id = wpv.id
+                )
+                OR EXISTS (
+                  SELECT planning_point_id FROM approved_package_point_snapshots WHERE work_package_version_id = wpv.id
+                  EXCEPT
+                  SELECT planning_point_id FROM work_package_points WHERE work_package_version_id = wpv.id
+                )
+              )`,
+      },
+      {
+        name: 'approved versions have at least one snapshotted source',
+        sql: `SELECT wpv.id FROM work_package_versions wpv
+              WHERE wpv.status = 'READY_FOR_EXECUTION' AND (
+                NOT EXISTS (
+                  SELECT 1 FROM work_package_points wpp WHERE wpp.work_package_version_id = wpv.id
+                )
+                OR NOT EXISTS (
+                  SELECT 1 FROM approved_package_point_snapshots snapshots
+                  WHERE snapshots.work_package_version_id = wpv.id
+                )
+              )`,
+      },
+      {
         name: 'completed agent runs have one contribution',
         sql: `SELECT ar.id FROM agent_runs ar LEFT JOIN messages m ON m.agent_run_id = ar.id
               WHERE ar.status = 'COMPLETED' GROUP BY ar.id HAVING COUNT(m.id) <> 1`,
@@ -917,6 +1067,14 @@ export class PlanningService {
         name: 'retry sources have at most one child run',
         sql: `SELECT retry_of_run_id FROM agent_runs WHERE retry_of_run_id IS NOT NULL
               GROUP BY retry_of_run_id HAVING COUNT(*) > 1`,
+      },
+      {
+        name: 'retry children preserve source discussion adapter and prompt',
+        sql: `SELECT child.id FROM agent_runs child
+              JOIN agent_runs parent ON parent.id = child.retry_of_run_id
+              WHERE child.discussion_id <> parent.discussion_id
+                 OR child.adapter <> parent.adapter
+                 OR child.prompt <> parent.prompt`,
       },
     ];
     const failures = checks.flatMap(check => {
@@ -1036,14 +1194,23 @@ export class PlanningService {
     return participant;
   }
 
-  ensureParticipantOutsideMutation(input) {
-    return transaction(this.database, () => this.ensureParticipant(input));
-  }
-
   touchDiscussion(id, timestamp) {
     this.database.prepare(`
       UPDATE discussions SET updated_at = ?, row_version = row_version + 1 WHERE id = ?
     `).run(timestamp, id);
+  }
+
+  assertCodexTurnAvailable({ discussionId, threadId }) {
+    const overlappingRun = [...this.activeRuns.values()].find(activeRun => (
+      activeRun.adapter === 'codex'
+      && (
+        activeRun.discussionId === discussionId
+        || (threadId && activeRun.threadId && activeRun.threadId === threadId)
+      )
+    ));
+    if (overlappingRun) {
+      throw conflict('Codex is still contributing in this planning room or shared Codex thread. Wait for it to finish before starting another Codex turn.');
+    }
   }
 
   assertOwner(actorId) {
@@ -1070,10 +1237,47 @@ export class PlanningService {
     }));
   }
 
-  shutdown() {
+  shutdown({ timeoutMs = 6000 } = {}) {
+    if (this.shutdownPromise) return this.shutdownPromise;
     this.shuttingDown = true;
-    for (const controller of this.activeRuns.values()) controller.abort();
-    this.activeRuns.clear();
+    const active = [...this.activeRuns.entries()];
+    this.shutdownPromise = (async () => {
+      for (const [, state] of active) state.controller.abort();
+      if (active.length) {
+        const settled = Promise.allSettled(active.map(([, state]) => state.completion));
+        let timeoutHandle;
+        try {
+          await Promise.race([
+            settled,
+            new Promise(resolve => { timeoutHandle = setTimeout(resolve, timeoutMs); }),
+          ]);
+        } finally {
+          clearTimeout(timeoutHandle);
+        }
+        const completedAt = now();
+        transaction(this.database, () => {
+          for (const [runId] of active) {
+            const update = this.database.prepare(`
+              UPDATE agent_runs
+              SET status = 'INTERRUPTED', error_code = 'SERVICE_SHUTDOWN',
+                  error_message = 'The local service stopped before this contribution completed. Retry is available.',
+                  completed_at = ?, row_version = row_version + 1
+              WHERE id = ? AND status = 'RUNNING'
+            `).run(completedAt, runId);
+            if (Number(update.changes) === 1) {
+              appendAudit(this.database, {
+                eventType: 'AGENT_RUN_INTERRUPTED',
+                resourceType: 'AGENT_RUN',
+                resourceId: runId,
+                details: { reason: 'SERVICE_SHUTDOWN' },
+              });
+            }
+          }
+        });
+      }
+      this.activeRuns.clear();
+    })();
+    return this.shutdownPromise;
   }
 }
 

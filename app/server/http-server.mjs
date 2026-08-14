@@ -17,6 +17,7 @@ const MIME_TYPES = new Map([
   ['.woff2', 'font/woff2'],
   ['.json', 'application/json; charset=utf-8'],
 ]);
+const MUTATION_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 function securityHeaders(response) {
   response.setHeader('X-Content-Type-Options', 'nosniff');
@@ -36,6 +37,51 @@ function sendJson(response, status, value, extraHeaders = {}) {
     ...extraHeaders,
   });
   response.end(body);
+}
+
+function formattedHost(host) {
+  return host.includes(':') ? `[${host}]` : host;
+}
+
+function trustedAuthority(server, host, configuredPort) {
+  const address = server.address();
+  const port = typeof address === 'object' && address ? address.port : configuredPort;
+  const hostname = formattedHost(host);
+  return port === 80 ? [hostname, `${hostname}:80`] : [`${hostname}:${port}`];
+}
+
+function enforceLocalRequestBoundary(server, host, port, request, url) {
+  const receivedAuthority = String(request.headers.host || '').trim().toLowerCase();
+  const authorities = trustedAuthority(server, host, port);
+  if (!receivedAuthority || !authorities.includes(receivedAuthority)) {
+    throw new AppError(421, 'UNTRUSTED_HOST', 'The request host is not trusted by this local service.');
+  }
+  if (!url.pathname.startsWith('/api/')) return;
+
+  const origin = request.headers.origin;
+  if (origin) {
+    let parsedOrigin;
+    try {
+      parsedOrigin = new URL(String(origin));
+    } catch {
+      throw new AppError(403, 'UNTRUSTED_ORIGIN', 'Cross-origin API requests are not allowed.');
+    }
+    if (parsedOrigin.protocol !== 'http:' || parsedOrigin.host.toLowerCase() !== receivedAuthority) {
+      throw new AppError(403, 'UNTRUSTED_ORIGIN', 'Cross-origin API requests are not allowed.');
+    }
+  }
+
+  const fetchSite = String(request.headers['sec-fetch-site'] || '').toLowerCase();
+  if (fetchSite === 'cross-site' || fetchSite === 'same-site') {
+    throw new AppError(403, 'UNTRUSTED_ORIGIN', 'Cross-origin API requests are not allowed.');
+  }
+
+  if (MUTATION_METHODS.has(request.method || '')) {
+    const contentType = String(request.headers['content-type'] || '').split(';', 1)[0].trim().toLowerCase();
+    if (contentType !== 'application/json') {
+      throw new AppError(415, 'UNSUPPORTED_MEDIA_TYPE', 'API mutations require application/json.');
+    }
+  }
 }
 
 async function readJsonBody(request, { limit = 1024 * 1024 } = {}) {
@@ -190,7 +236,8 @@ async function serveStatic(request, response, url) {
 export function createHttpServer({ service, host = '127.0.0.1', port = 47831 }) {
   const server = http.createServer(async (request, response) => {
     try {
-      const url = new URL(request.url || '/', `http://${host}:${port}`);
+      const url = new URL(request.url || '/', `http://${formattedHost(host)}:${port}`);
+      enforceLocalRequestBoundary(server, host, port, request, url);
       if (url.pathname.startsWith('/api/')) {
         const handled = await routeApi(service, request, response, url);
         if (!handled) sendJson(response, 404, { error: { code: 'NOT_FOUND', message: 'API route not found.' } });
@@ -222,12 +269,13 @@ export function createHttpServer({ service, host = '127.0.0.1', port = 47831 }) 
       });
       const address = server.address();
       const resolvedPort = typeof address === 'object' && address ? address.port : port;
-      return { host, port: resolvedPort, url: `http://${host}:${resolvedPort}` };
+      return { host, port: resolvedPort, url: `http://${formattedHost(host)}:${resolvedPort}` };
     },
     async close() {
-      service.shutdown();
-      if (!server.listening) return;
-      await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+      if (server.listening) {
+        await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+      }
+      await service.shutdown();
     },
   };
 }

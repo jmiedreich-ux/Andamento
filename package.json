@@ -9,8 +9,8 @@
   },
   "scripts": {
     "start": "node app/server/main.mjs",
-    "test": "node --test app/test/unit/validation.test.mjs app/test/integration/planning-service.test.mjs",
-    "test:coverage": "node --experimental-test-coverage --test app/test/unit/validation.test.mjs app/test/integration/planning-service.test.mjs",
+    "test": "node --test app/test/unit/*.test.mjs app/test/integration/*.test.mjs",
+    "test:coverage": "node --experimental-test-coverage --test app/test/unit/*.test.mjs app/test/integration/*.test.mjs",
     "test:e2e": "playwright test",
     "test:all": "npm run test && npm run test:e2e",
     "qa:detect": "node .agents/skills/impeccable/scripts/detect.mjs --json app/public/index.html app/public/app.mjs app/public/styles.css"
