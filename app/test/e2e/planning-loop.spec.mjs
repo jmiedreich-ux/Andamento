@@ -581,10 +581,51 @@ test.describe.serial('Night 1 planning loop', () => {
     await expect(page.getByRole('button', { name: 'Register another project' })).toBeDisabled();
     await page.unroute('**/api/bootstrap', failInitialBootstrap);
     await page.getByRole('button', { name: 'Try local service again', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Start with the work', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /^(Start with the work|Register another project)$/ })).toBeVisible();
+    await expect(page.getByLabel('Project name')).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Register another project' })).toBeEnabled();
+    await expect(page.locator('.project-cell')).not.toContainText('Project status unknown');
+    await expect(page.locator('#liveRegion')).toHaveText('The local project register is available again.');
+    await expect(page.locator('#assertiveRegion')).toHaveText('');
+    await expect(page.getByRole('alert')).toHaveCount(0);
     await page.getByRole('button', { name: 'Register project' }).click();
     await expect(page.getByLabel('Project name')).toHaveJSProperty('validity.valueMissing', true);
     await expect(page).toHaveURL(/#\/new-project$/);
+
+    const registeredProjects = await json(await request.get('/api/bootstrap'));
+    const routedProject = registeredProjects.projects[0];
+    expect(routedProject).toBeTruthy();
+    let releaseHeldBootstrap;
+    const heldBootstrapRelease = new Promise(resolve => { releaseHeldBootstrap = resolve; });
+    let markHeldBootstrapRequested;
+    const heldBootstrapRequested = new Promise(resolve => { markHeldBootstrapRequested = resolve; });
+    let heldBootstrapArmed = true;
+    const holdOneBootstrap = async route => {
+      if (heldBootstrapArmed) {
+        heldBootstrapArmed = false;
+        markHeldBootstrapRequested();
+        await heldBootstrapRelease;
+      }
+      await route.continue();
+    };
+    await page.route('**/api/bootstrap', holdOneBootstrap);
+    try {
+      await page.reload();
+      await heldBootstrapRequested;
+      await expect(page.locator('.loading-surface')).toBeVisible();
+      await page.evaluate(hash => { window.location.hash = hash; }, `#/projects/${routedProject.id}`);
+      await expect(page.locator('.loading-surface')).toBeVisible();
+      releaseHeldBootstrap();
+      await expect(page.getByRole('heading', { name: routedProject.name, exact: true })).toBeVisible();
+      await expect(page).toHaveURL(new RegExp(`#\\/projects\\/${routedProject.id}$`));
+      await expect(page.getByRole('alert')).toHaveCount(0);
+      await expect(page.locator('.local-status')).toHaveText('Local service ready');
+    } finally {
+      releaseHeldBootstrap();
+      await page.unroute('**/api/bootstrap', holdOneBootstrap);
+    }
+    await page.goto('/#/new-project');
+    await expect(page.getByRole('heading', { name: /^(Start with the work|Register another project)$/ })).toBeVisible();
 
     const project = await createProjectUi(page, 'Validation paths');
     await page.getByRole('button', { name: 'Open room' }).click();
@@ -1334,6 +1375,361 @@ test.describe.serial('Night 1 planning loop', () => {
     } finally {
       await stopDedicatedServer(server);
     }
+  });
+
+  test('stale-refresh-alert-suppression', async ({ page, request }) => {
+    const workspace = await createWorkspaceApi(request, 'Stale refresh');
+    const target = await createWorkspaceApi(request, 'Stale refresh target');
+    const detailEndpoint = `/api/discussions/${workspace.discussion.id}`;
+    const messageEndpoint = `${detailEndpoint}/messages`;
+    await page.goto(routeFor(workspace));
+
+    let releaseHeldReads;
+    const heldReadRelease = new Promise(resolve => { releaseHeldReads = resolve; });
+    let markReadHeld;
+    const readHeld = new Promise(resolve => { markReadHeld = resolve; });
+    const holdEveryRoomRead = async route => {
+      if (route.request().method() !== 'GET') {
+        await route.continue();
+        return;
+      }
+      markReadHeld();
+      await heldReadRelease;
+      await route.abort('failed');
+    };
+    const refuseOneMessage = async route => {
+      if (route.request().method() !== 'POST') {
+        await route.continue();
+        return;
+      }
+      await route.abort('failed');
+    };
+    await page.route(`**${detailEndpoint}`, holdEveryRoomRead);
+    await page.route(`**${messageEndpoint}`, refuseOneMessage);
+    try {
+      await page.getByLabel('Add owner context').fill('An unconfirmed contribution arms the explicit reconcile action.');
+      await page.getByRole('button', { name: 'Add to discussion', exact: true }).click();
+      const reconcile = page.getByRole('button', { name: 'Reconcile saved state', exact: true });
+      await expect(reconcile).toBeVisible();
+      await reconcile.click();
+      await readHeld;
+
+      await page.evaluate(hash => { window.location.hash = hash; }, `#/projects/${target.project.id}/discussions/${target.discussion.id}`);
+      await expect(page.getByRole('heading', { name: target.discussion.title, exact: true })).toBeVisible();
+      await expect(page.getByRole('alert')).toHaveCount(0);
+      releaseHeldReads();
+      await page.waitForTimeout(700);
+      await expect(page.getByRole('heading', { name: target.discussion.title, exact: true })).toBeVisible();
+      await expect(page.getByRole('alert')).toHaveCount(0);
+      await expect(page.locator('.local-status')).toHaveText('Local service ready');
+      await expect(page.locator('#assertiveRegion')).not.toContainText('Failed to fetch');
+    } finally {
+      releaseHeldReads();
+      await page.unroute(`**${messageEndpoint}`, refuseOneMessage);
+      await page.unroute(`**${detailEndpoint}`, holdEveryRoomRead);
+    }
+
+    let releaseSecondStaleRead;
+    const secondStaleReadRelease = new Promise(resolve => { releaseSecondStaleRead = resolve; });
+    let markSecondStaleReadHeld;
+    const secondStaleReadHeld = new Promise(resolve => { markSecondStaleReadHeld = resolve; });
+    let secondStaleReadArmed = true;
+    const holdOneRoomRead = async route => {
+      if (route.request().method() === 'GET' && secondStaleReadArmed) {
+        secondStaleReadArmed = false;
+        markSecondStaleReadHeld();
+        await secondStaleReadRelease;
+        await route.abort('failed');
+        return;
+      }
+      await route.continue();
+    };
+    await page.evaluate(hash => { window.location.hash = hash; }, `#/projects/${workspace.project.id}/discussions/${workspace.discussion.id}`);
+    await expect(page.getByRole('heading', { name: workspace.discussion.title, exact: true })).toBeVisible();
+    await page.route(`**${detailEndpoint}`, holdOneRoomRead);
+    try {
+      await secondStaleReadHeld;
+      const durableAfterStaleRead = 'This durable context proves a newer read already succeeded.';
+      await page.getByLabel('Add owner context').fill(durableAfterStaleRead);
+      await page.getByRole('button', { name: 'Add to discussion', exact: true }).click();
+      await expect(page.getByText(durableAfterStaleRead, { exact: true })).toBeVisible();
+      releaseSecondStaleRead();
+      await page.waitForTimeout(700);
+      await expect(page.getByText(durableAfterStaleRead, { exact: true })).toBeVisible();
+      await expect(page.getByRole('alert')).toHaveCount(0);
+      await expect(page.locator('.local-status')).toHaveText('Local service ready');
+    } finally {
+      releaseSecondStaleRead();
+      await page.unroute(`**${detailEndpoint}`, holdOneRoomRead);
+    }
+  });
+
+  test('unconfirmed-input-recovery', async ({ page, request }) => {
+    const workspace = await createWorkspaceApi(request, 'Unconfirmed recovery');
+    const siblingRoom = await createDiscussionApi(request, workspace.project.id, 'Unconfirmed recovery sibling room');
+    const elsewhere = await createWorkspaceApi(request, 'Unconfirmed recovery elsewhere');
+    const packageWorkspace = await createWorkspaceApi(request, 'Unconfirmed package recovery');
+    const packageVersion = await seedDraftPackage(request, packageWorkspace.discussion.id, {
+      pointText: 'Reconcile a package save whose receipt is lost.',
+    });
+    const roomHash = `#/projects/${workspace.project.id}/discussions/${workspace.discussion.id}`;
+    const siblingHash = `#/projects/${workspace.project.id}/discussions/${siblingRoom.id}`;
+    const elsewhereHash = `#/projects/${elsewhere.project.id}/discussions/${elsewhere.discussion.id}`;
+    const packageHash = `#/projects/${packageWorkspace.project.id}/discussions/${packageWorkspace.discussion.id}`;
+    const packageEndpoint = `/api/work-package-versions/${packageVersion.id}`;
+    const goToHash = async hash => page.evaluate(target => { window.location.hash = target; }, hash);
+    await page.goto(routeFor(workspace));
+
+    const messageEndpoint = `/api/discussions/${workspace.discussion.id}/messages`;
+    const lostMessage = 'This owner context is typed once while its receipt is lost.';
+    const messageKeys = [];
+    let loseMessageReceiptArmed = true;
+    let markMessageReceiptLost;
+    const messageReceiptLost = new Promise(resolve => { markMessageReceiptLost = resolve; });
+    const loseOneMessageReceipt = async route => {
+      if (route.request().method() !== 'POST') {
+        await route.continue();
+        return;
+      }
+      messageKeys.push(route.request().postDataJSON().idempotencyKey);
+      if (loseMessageReceiptArmed) {
+        loseMessageReceiptArmed = false;
+        const response = await route.fetch();
+        expect(response.ok()).toBe(true);
+        markMessageReceiptLost();
+        await route.abort('failed');
+        return;
+      }
+      await route.continue();
+    };
+    await page.route(`**${messageEndpoint}`, loseOneMessageReceipt);
+    try {
+      await page.getByLabel('Add owner context').fill(lostMessage);
+      await page.getByRole('button', { name: 'Add to discussion', exact: true }).click();
+      await messageReceiptLost;
+      await expect(page.getByRole('button', { name: 'Add to discussion', exact: true })).toBeEnabled();
+
+      await goToHash(siblingHash);
+      await expect(page.getByRole('heading', { name: siblingRoom.title, exact: true })).toBeVisible();
+      await expect(page.getByLabel('Add owner context')).toHaveValue('');
+      await goToHash(elsewhereHash);
+      await expect(page.getByRole('heading', { name: elsewhere.discussion.title, exact: true })).toBeVisible();
+      await expect(page.getByLabel('Add owner context')).toHaveValue('');
+
+      await goToHash(roomHash);
+      await expect(page.getByRole('heading', { name: workspace.discussion.title, exact: true })).toBeVisible();
+      await expect(page.getByLabel('Add owner context')).toHaveValue(lostMessage);
+      await expect(page.locator('#liveRegion')).toContainText('unconfirmed input was restored');
+
+      await page.getByRole('button', { name: 'Add to discussion', exact: true }).click();
+      await expect(page.getByLabel('Add owner context')).toHaveValue('');
+      expect(messageKeys).toHaveLength(2);
+      expect(messageKeys[0]).toBe(messageKeys[1]);
+    } finally {
+      await page.unroute(`**${messageEndpoint}`, loseOneMessageReceipt);
+    }
+    const recoveredMessages = await json(await request.get(`/api/discussions/${workspace.discussion.id}`));
+    expect(recoveredMessages.messages.filter(message => message.content === lostMessage)).toHaveLength(1);
+
+    const captureSource = await addMessageApi(request, workspace.discussion.id, 'Source contribution for unconfirmed capture recovery.');
+    const captureEndpoint = `/api/messages/${captureSource.message.id}/planning-points`;
+    const capturedText = 'This proposed point survives leaving after an unconfirmed capture.';
+    const captureKeys = [];
+    let refuseCaptureArmed = true;
+    const refuseOneCapture = async route => {
+      captureKeys.push(route.request().postDataJSON().idempotencyKey);
+      if (refuseCaptureArmed) {
+        refuseCaptureArmed = false;
+        await route.abort('failed');
+        return;
+      }
+      await route.continue();
+    };
+    await page.route(`**${captureEndpoint}`, refuseOneCapture);
+    try {
+      const sourceCard = page.locator('.message-trace').filter({ hasText: 'Source contribution for unconfirmed capture recovery.' });
+      await expect(sourceCard).toBeVisible();
+      await sourceCard.getByRole('button', { name: 'Capture point' }).click();
+      await sourceCard.getByLabel('Proposed planning point').fill(capturedText);
+      await sourceCard.getByRole('button', { name: 'Add proposal' }).click();
+      await expect(sourceCard.getByRole('button', { name: 'Add proposal' })).toBeEnabled();
+      expect(captureKeys).toHaveLength(1);
+
+      await goToHash(siblingHash);
+      await expect(page.getByRole('heading', { name: siblingRoom.title, exact: true })).toBeVisible();
+      await expect(page.getByLabel('Proposed planning point')).toHaveCount(0);
+      await goToHash(roomHash);
+      const returnedSourceCard = page.locator('.message-trace').filter({ hasText: 'Source contribution for unconfirmed capture recovery.' });
+      await expect(returnedSourceCard.getByLabel('Proposed planning point')).toHaveValue(capturedText);
+
+      await returnedSourceCard.getByRole('button', { name: 'Add proposal' }).click();
+      await expect(page.locator('.decision-row').filter({ hasText: capturedText })).toBeVisible();
+      expect(captureKeys).toHaveLength(2);
+      expect(captureKeys[0]).toBe(captureKeys[1]);
+    } finally {
+      await page.unroute(`**${captureEndpoint}`, refuseOneCapture);
+    }
+    const recoveredPoints = await json(await request.get(`/api/discussions/${workspace.discussion.id}`));
+    expect(recoveredPoints.points.filter(point => point.text === capturedText)).toHaveLength(1);
+
+    const capturedPoint = recoveredPoints.points.find(point => point.text === capturedText);
+    const replacementEndpoint = `/api/planning-points/${capturedPoint.id}/replacement`;
+    const replacementText = 'This replacement proposal survives leaving after an unconfirmed edit.';
+    const replacementKeys = [];
+    let refuseReplacementArmed = true;
+    const refuseOneReplacement = async route => {
+      replacementKeys.push(route.request().postDataJSON().idempotencyKey);
+      if (refuseReplacementArmed) {
+        refuseReplacementArmed = false;
+        await route.abort('failed');
+        return;
+      }
+      await route.continue();
+    };
+    await page.route(`**${replacementEndpoint}`, refuseOneReplacement);
+    try {
+      const capturedRow = page.locator(`#point-${capturedPoint.id}`);
+      await capturedRow.getByRole('button', { name: 'Edit proposal' }).click();
+      await capturedRow.getByLabel('Replacement proposal').fill(replacementText);
+      await capturedRow.getByRole('button', { name: 'Create replacement' }).click();
+      await expect(capturedRow.getByRole('button', { name: 'Create replacement' })).toBeEnabled();
+      expect(replacementKeys).toHaveLength(1);
+
+      await goToHash(siblingHash);
+      await expect(page.getByRole('heading', { name: siblingRoom.title, exact: true })).toBeVisible();
+      await expect(page.getByLabel('Replacement proposal')).toHaveCount(0);
+      await goToHash(roomHash);
+      const returnedRow = page.locator(`#point-${capturedPoint.id}`);
+      await expect(returnedRow.getByLabel('Replacement proposal')).toHaveValue(replacementText);
+
+      await returnedRow.getByRole('button', { name: 'Create replacement' }).click();
+      await expect(page.locator('.decision-row').filter({ hasText: replacementText })).toBeVisible();
+      expect(replacementKeys).toHaveLength(2);
+      expect(replacementKeys[0]).toBe(replacementKeys[1]);
+    } finally {
+      await page.unroute(`**${replacementEndpoint}`, refuseOneReplacement);
+    }
+    const recoveredReplacements = await json(await request.get(`/api/discussions/${workspace.discussion.id}`));
+    expect(recoveredReplacements.points.filter(point => point.text === replacementText)).toHaveLength(1);
+
+    await goToHash(packageHash);
+    await expect(page.getByRole('heading', { name: packageWorkspace.discussion.title, exact: true })).toBeVisible();
+
+    const durableOutcome = 'This package save is durable even though its receipt is lost.';
+    let markPackageReceiptLost;
+    const packageReceiptLost = new Promise(resolve => { markPackageReceiptLost = resolve; });
+    let losePackageReceiptArmed = true;
+    const loseOnePackageReceipt = async route => {
+      if (route.request().method() !== 'PUT') {
+        await route.continue();
+        return;
+      }
+      if (losePackageReceiptArmed) {
+        losePackageReceiptArmed = false;
+        const response = await route.fetch();
+        expect(response.ok()).toBe(true);
+        markPackageReceiptLost();
+        await route.abort('failed');
+        return;
+      }
+      await route.continue();
+    };
+    await page.route(`**${packageEndpoint}`, loseOnePackageReceipt);
+    try {
+      await openPackageAtNarrowWidth(page);
+      await page.getByLabel('Outcome').fill(durableOutcome);
+      await page.getByRole('button', { name: 'Save draft', exact: true }).click();
+      await packageReceiptLost;
+      await expect(page.getByRole('button', { name: 'Draft saved', exact: true })).toBeVisible({ timeout: 9_000 });
+      await expect(page.getByLabel('Outcome')).toHaveValue(durableOutcome);
+      await expect(page.locator('#liveRegion')).toContainText('already saved locally');
+      await expect(page.getByText('This package changed in another view while you were editing.')).toHaveCount(0);
+      await expect(page.getByRole('button', { name: 'Resolve conflicts to save' })).toHaveCount(0);
+      await expect(page.locator('.local-status')).toHaveText('Local service ready');
+    } finally {
+      await page.unroute(`**${packageEndpoint}`, loseOnePackageReceipt);
+    }
+    const reconciledPackage = await json(await request.get(`/api/discussions/${packageWorkspace.discussion.id}`));
+    expect(reconciledPackage.workPackage.versions.filter(version => version.status === 'DRAFT')).toHaveLength(1);
+    expect(reconciledPackage.workPackage.currentVersion.content.outcome).toBe(durableOutcome);
+
+    const heldOutcome = 'This unsaved package outcome returns after leaving an unconfirmed save.';
+    const refuseOnePackageSave = async route => {
+      if (route.request().method() !== 'PUT') {
+        await route.continue();
+        return;
+      }
+      await route.abort('failed');
+    };
+    await page.route(`**${packageEndpoint}`, refuseOnePackageSave);
+    try {
+      await page.getByLabel('Outcome').fill(heldOutcome);
+      await page.getByRole('button', { name: 'Save draft', exact: true }).click();
+      await expect(page.getByRole('button', { name: 'Save draft', exact: true })).toBeEnabled();
+      await goToHash(elsewhereHash);
+      await expect(page.getByRole('heading', { name: elsewhere.discussion.title, exact: true })).toBeVisible();
+      await goToHash(packageHash);
+      await expect(page.getByRole('heading', { name: packageWorkspace.discussion.title, exact: true })).toBeVisible();
+      await openPackageAtNarrowWidth(page);
+      await expect(page.getByLabel('Outcome')).toHaveValue(heldOutcome);
+      await expect(page.getByRole('button', { name: 'Save draft', exact: true })).toBeVisible();
+    } finally {
+      await page.unroute(`**${packageEndpoint}`, refuseOnePackageSave);
+    }
+    const unsavedPackage = await json(await request.get(`/api/discussions/${packageWorkspace.discussion.id}`));
+    expect(unsavedPackage.workPackage.currentVersion.content.outcome).toBe(durableOutcome);
+    await page.getByRole('button', { name: 'Save draft', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Draft saved', exact: true })).toBeVisible();
+    const savedPackage = await json(await request.get(`/api/discussions/${packageWorkspace.discussion.id}`));
+    expect(savedPackage.workPackage.currentVersion.content.outcome).toBe(heldOutcome);
+
+    const roomEndpoint = `/api/projects/${workspace.project.id}/discussions`;
+    const heldRoomTitle = 'This room title returns after an unconfirmed open';
+    const roomKeys = [];
+    let refuseRoomArmed = true;
+    const refuseOneRoom = async route => {
+      if (route.request().method() !== 'POST') {
+        await route.continue();
+        return;
+      }
+      roomKeys.push(route.request().postDataJSON().idempotencyKey);
+      if (refuseRoomArmed) {
+        refuseRoomArmed = false;
+        await route.abort('failed');
+        return;
+      }
+      await route.continue();
+    };
+    await page.route(`**${roomEndpoint}`, refuseOneRoom);
+    try {
+      await goToHash(`#/projects/${workspace.project.id}`);
+      await expect(page.getByRole('heading', { name: workspace.project.name, exact: true })).toBeVisible();
+      await page.getByLabel('New planning room').fill(heldRoomTitle);
+      await page.getByRole('button', { name: 'Open room', exact: true }).click();
+      await expect(page.getByRole('button', { name: 'Open room', exact: true })).toBeEnabled();
+      expect(roomKeys).toHaveLength(1);
+
+      await goToHash(`#/projects/${elsewhere.project.id}`);
+      await expect(page.getByRole('heading', { name: elsewhere.project.name, exact: true })).toBeVisible();
+      await expect(page.getByLabel('New planning room')).toHaveValue('');
+      await goToHash(`#/projects/${workspace.project.id}`);
+      await expect(page.getByRole('heading', { name: workspace.project.name, exact: true })).toBeVisible();
+      await expect(page.getByLabel('New planning room')).toHaveValue(heldRoomTitle);
+
+      await page.getByRole('button', { name: 'Open room', exact: true }).click();
+      await expect(page.getByRole('heading', { name: heldRoomTitle, exact: true })).toBeVisible();
+      expect(roomKeys).toHaveLength(2);
+      expect(roomKeys[0]).toBe(roomKeys[1]);
+    } finally {
+      await page.unroute(`**${roomEndpoint}`, refuseOneRoom);
+    }
+    const recoveredRooms = await json(await request.get(roomEndpoint));
+    expect(recoveredRooms.discussions.filter(discussion => discussion.title === heldRoomTitle)).toHaveLength(1);
+
+    await page.getByLabel('Add owner context').fill('This unsent draft is discarded by a full page reload.');
+    await page.reload();
+    await expect(page.getByRole('heading', { name: heldRoomTitle, exact: true })).toBeVisible();
+    await expect(page.getByLabel('Add owner context')).toHaveValue('');
   });
 
   test('authority-immutability-idempotency', async ({ page, request }) => {

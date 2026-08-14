@@ -8,9 +8,9 @@
 - **Visual direction:** The approved first surface uses an independent light architectural tracing-table world centered on a visible lineage spine. VennuSign, Google Sheets, and earlier workbench visuals remain historical anti-references.
 - **System of record direction:** Local SQLite in WAL mode, accessed through a local application service.
 - **Existing prototype:** Google Sheets, Apps Script, and the Codex relay remain behavioral and integration evidence only. They are neither the intended authoritative backend nor visual design inputs for the new product.
-- **Repository state:** Private GitHub repository `https://github.com/jmiedreich-ux/Andamento`; the owner-requested WIP takeover checkpoint is published as draft PR [#1](https://github.com/jmiedreich-ux/Andamento/pull/1) from `feature/planning-loop-m1`.
-- **Implementation state:** Planning Loop Milestone 1 (`AND-N1-PLANNING-LOOP-v1`) is a work-in-progress takeover checkpoint on `feature/planning-loop-m1`. The backend authority remediation is implemented, but the latest browser recovery work is incomplete and the branch is not ready for review or acceptance.
-- **Verification state:** On the exact takeover worktree, implementation verification passed 53/53. Playwright stopped with 1 passed, 1 failed, and 6 not run at `empty-validation-refusal`. The earlier Impeccable PASS predates the current UI delta and is no longer an exact-state gate. Independent review and owner acceptance remain pending.
+- **Repository state:** Private GitHub repository `https://github.com/jmiedreich-ux/Andamento`; work continues on `feature/planning-loop-m1`, published as draft PR [#1](https://github.com/jmiedreich-ux/Andamento/pull/1).
+- **Implementation state:** Planning Loop Milestone 1 (`AND-N1-PLANNING-LOOP-v1`) is implementation-complete on `feature/planning-loop-m1`. The backend authority remediation and the browser recovery work that blocked the takeover checkpoint are both finished.
+- **Verification state:** Implementation verification passes 53/53, coverage reports 90.23% lines and 88.17% functions, Playwright passes 10/10 including two new recovery specifications, `npm audit --audit-level=high` reports 0 vulnerabilities, and the running service reports all 16 invariants passing. The visual surface is unchanged by this delta, so the earlier Impeccable evidence still describes it, but a bounded finish review of the changed behavior by a non-author has not been run. Independent exact-head review and owner acceptance remain pending.
 - **CI state:** Not configured.
 
 ## Working Model
@@ -33,4 +33,4 @@ Repository execution, implementation evidence, product review, and final product
 
 ## Exact Next Action
 
-Publish the explicit owner-requested draft takeover checkpoint, then have the next coordinating agent claim the branch, finish route-scoped pending-input and bootstrap recovery, and restore the complete Playwright gate before fresh Impeccable and independent review.
+Obtain a bounded Impeccable finish review and an independent implementation and security review of the exact head of `feature/planning-loop-m1` from a reviewer who did not author it, then answer the reload-durability question in `docs/features/planning-loop/open-questions.md` before the owner acceptance walkthrough.

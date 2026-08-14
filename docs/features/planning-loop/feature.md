@@ -6,7 +6,7 @@
 - **Milestone:** 1 — Discussion to approved package
 - **Work package:** `AND-N1-PLANNING-LOOP-v1`
 - **Owner authorization:** Explicitly approved through the active `/goal` objective on 2026-08-14
-- **Execution state:** Work-in-progress takeover checkpoint on `feature/planning-loop-m1`; backend verification is green, but the latest browser recovery delta is incomplete and Playwright is failing
+- **Execution state:** Browser recovery work is complete on `feature/planning-loop-m1`. Implementation verification and the full Playwright suite pass locally; independent exact-head review and owner acceptance remain open
 - **Publication state:** The owner explicitly requested a GitHub branch and draft-PR handoff checkpoint on 2026-08-14. Publication grants no review approval, merge authority, or owner acceptance.
 
 ## Whole Behavior
@@ -72,6 +72,9 @@ The same authority behavior applies at every planning-point disposition, work-pa
 | Cancellation and close | Composer/draft edits can be cancelled; returning shows the last durable state | Playwright navigation spec |
 | Retry after failure | Failed deterministic agent run can retry without losing the prompt or duplicating contributions | Playwright failure/retry spec |
 | Refresh, leave, return | Durable messages, decisions, and drafts reload from SQLite | Playwright persistence spec |
+| Unconfirmed request, leave, return | Unconfirmed message, capture, replacement, package, and room-title input is held against its project and room, restored on return to that exact route, and resubmitted under the original request-bound idempotency key; it does not cross a project or room boundary and does not survive a full reload | Playwright `unconfirmed-input-recovery` spec |
+| Lost mutation receipt | A save whose response is lost but whose exact content is already durable reconciles to saved instead of reporting a concurrent-edit conflict, and resubmission creates no duplicate record | Playwright `unconfirmed-input-recovery` spec plus idempotency persistence tests |
+| Stale read after navigation | A superseded room read or bootstrap response never replaces a newer healthy route, raises an alert, or leaves a resolved error announced | Playwright `stale-refresh-alert-suppression` and `empty-validation-refusal` specs |
 | Repeated submission | Idempotency keys prevent duplicate messages, runs, points, and approvals | Playwright authority spec plus persistence tests |
 | Concurrent activity | Parallel agent completions remain separately attributed; stale owner edits cannot overwrite | Two-context Playwright concurrency spec |
 | Existing saved data | Restarted service loads existing databases and migrations converge | Persistence restart test and Playwright restart check |
@@ -95,9 +98,13 @@ No path may be reported as passing without the named command output. Anything th
 
 ## Evidence Commands
 
-### Evidence currency at takeover
+### Evidence currency
 
-The current checkpoint supersedes the earlier completion claim. On the exact published worktree, `npm test` passes **53/53**, while `npm run test:e2e` stops with **1 passed, 1 failed, and 6 not run** at `empty-validation-refusal`. The latest UI work contains an incomplete pending-draft recovery seam. Earlier coverage, runtime, screenshots, and Impeccable verdicts below are historical evidence from a prior UI snapshot and do **not** satisfy the current exact-state gates. The Impeccable detector already ran once and must not be rerun.
+The browser recovery work that blocked the takeover checkpoint is complete. On the current worktree, `npm test` passes **53/53** and `npm run test:e2e` passes **10/10**, including two new specifications for unconfirmed-input recovery and stale-read alert suppression. The Impeccable screenshots and detector verdict below remain historical: this delta changed no markup, stylesheet, or asset, so the visual surface is unchanged, but the finish review of the changed behavior has not been performed by a non-author. The Impeccable detector already ran once and must not be rerun.
+
+### Browser recovery model
+
+Unconfirmed input recovery is route-scoped and in-memory. When a mutation ends in `REQUEST_UNCONFIRMED`, the browser holds one recovery record per operation slot, stamped with its project and planning-room identity. The record is restored only on re-entering that exact route, is dropped when the operation succeeds or the owner explicitly clears the input, and never crosses a project or room boundary. Resubmission reuses the original request-bound idempotency key, so a save whose receipt was lost cannot create a duplicate durable record. A package save whose exact content is already durable reconciles to saved instead of raising a concurrent-edit conflict. A superseded bootstrap or room read can neither replace a newer healthy route nor strand the loading surface, and a resolved error is retracted from the live regions rather than left announced. The reload boundary is recorded in `open-questions.md` for an explicit owner decision.
 
 ### Implementation verification
 
@@ -105,13 +112,13 @@ The current checkpoint supersedes the earlier completion claim. On the exact pub
 npm test
 ```
 
-Result on the takeover worktree on 2026-08-14: **53 passed, 0 failed**. The suite exercises the real on-disk SQLite boundary, all four migrations, sixteen persisted-state invariants, restart/WAL behavior, project isolation, attribution and lineage, idempotency, immutable history, authority denial, approval completeness, concurrency, retry/cancellation, Codex cleanup quarantine, provider-error sanitization, and validation.
+Result on 2026-08-14: **53 passed, 0 failed**. The suite exercises the real on-disk SQLite boundary, all four migrations, sixteen persisted-state invariants, restart/WAL behavior, project isolation, attribution and lineage, idempotency, immutable history, authority denial, approval completeness, concurrency, retry/cancellation, Codex cleanup quarantine, provider-error sanitization, and validation. The recovery delta is browser-only and added no service, storage, or migration change, so these results carry forward unchanged.
 
 ```text
 npm run test:coverage
 ```
 
-Current exact-checkpoint result: **UNTESTED**. The earlier coverage result belonged to a prior implementation snapshot and must be rerun after the browser recovery work is complete.
+Result on 2026-08-14: **53 passed, 0 failed**, all files **90.23% lines, 77.17% branches, 88.17% functions**. `http-server.mjs` reports the lowest line coverage because its routes are exercised end to end by Playwright rather than by `node --test`.
 
 ```text
 npm audit --audit-level=high
@@ -129,13 +136,26 @@ The authority regression was also proved by temporary inversion. With the owner 
 node.exe --test --test-name-pattern "denies non-owner decisions" app/test/integration/planning-service.test.mjs
 ```
 
+Both new browser regressions were proved the same way with this focused command:
+
+```text
+npx playwright test --grep "unconfirmed-input-recovery"
+```
+
+With recovery arming disabled in `withMutation`, it failed at the restored composer value (expected the held owner context, received `""`). With the lost-receipt reconciliation disabled in `syncPackageDraft`, it failed on the false `This package changed in another view while you were editing.` conflict. After restoring both, the specification passes. Three further defects were first observed as real failures before their fixes landed: the bootstrap-retry surface, a resolved error left announced in the assertive live region after navigation, and a stale `Package edits unsaved` header after the reconcile.
+
 ### UI QA
 
 ```text
 npm run test:e2e
 ```
 
-Exact takeover result: **1 passed, 1 failed, 6 did not run**. `empty-validation-refusal` failed after bootstrap retry because the page rendered the existing-project registration surface with a retained `Failed to fetch` alert instead of the expected first-run surface. The full UI QA gate is therefore **FAILED** until the next agent repairs the bootstrap/recovery behavior and reruns all eight specifications.
+Result on 2026-08-14: **10 passed, 0 failed** in roughly 1.4 minutes against the real browser, local application service, and on-disk SQLite boundary. Two specifications are new in this delta:
+
+- `stale-refresh-alert-suppression` — a superseded explicit room read must not alert after navigation, and an older read that fails after a newer successful read must neither alert nor roll the view back.
+- `unconfirmed-input-recovery` — unconfirmed message, capture, replacement, package, and room-title input is held per route, refused across project and room boundaries, restored on return, resubmitted under the original idempotency key with no duplicate durable record, reconciled without a false conflict when the receipt was lost but the content is already durable, and discarded by a full page reload while durable state returns from SQLite.
+
+The Playwright half of the UI QA gate therefore **passes**. The Impeccable half is **not satisfied for this delta**: this change touched no markup, stylesheet, or asset, so the approved visual direction is unchanged, but a bounded finish review by a non-author has not been run against the changed behavior.
 
 The Impeccable detector ran exactly once:
 
@@ -155,7 +175,7 @@ curl.exe http://127.0.0.1:47831/api/health
 curl.exe http://127.0.0.1:47831/api/invariants
 ```
 
-Historical only: the earlier service answered `status: ok`. At takeover publication the Andamento service is not running on port `47831`; exact-checkpoint runtime and all sixteen invariants remain to be demonstrated after the UI is repaired.
+Result on 2026-08-14: the service answered `{"status":"ok","service":"andamento","storage":"sqlite"}` and `/api/invariants` reported **16 passed, 0 failed**, covering approval uniqueness and owner authority, package source acceptance, discussion boundaries, approved lineage snapshots, planning-point identity and decision immutability, agent-run contribution counts, Codex cleanup quarantine, and retry parentage.
 
 Historical only: a prior live Codex smoke completed successfully, but the Codex adapter changed afterward. A current exact-checkpoint live smoke is **UNTESTED**.
 
@@ -166,6 +186,15 @@ rg -l "approvePackage|approval_events|dispositionPoint|replacementPoint|retryAge
 ```
 
 Complete relevant result set: both ordered migrations; browser application and styles; HTTP route and planning service; Playwright, integration, support, and validation test files. Every result is part of this milestone and was changed or verified. No parallel approval, disposition, retry, or package implementation was left unchanged.
+
+The recovery delta was searched separately:
+
+```text
+rg -l "pendingDraftRecoveries|holdDraftRecovery|consumePendingDraftRecoveries|clearAnnouncements|operationKey|clearOperation|REQUEST_UNCONFIRMED|bootstrapRequestSequence" app docs
+rg -l "idempotencyKey|idempotency_key" app
+```
+
+The first search returns `app/public/app.mjs` only: the recovery seam exists in exactly one place and no parallel implementation was left behind. The second returns migration `001`, the browser application, the planning service, the SQLite boundary, and the Playwright, HTTP-security, migration, service, and support test files. Every server-side result was deliberately left unchanged: the browser rebinds the existing request-bound idempotency contract rather than adding a second mechanism, so recovery required no service, storage, or migration change.
 
 ### Explicitly unexecuted or deferred
 

@@ -42,6 +42,8 @@ const state = {
   routeGeneration: 0,
   detailRequestSequence: 0,
   bootstrapRequestSequence: 0,
+  bootstrapLoadGeneration: 0,
+  bootstrapRequestsInFlight: 0,
   mutationKeys: new Map(),
   pendingRefreshOperations: new Map(),
   pendingDraftRecoveries: new Map(),
@@ -81,7 +83,7 @@ function canonicalRequestValue(value) {
   return value;
 }
 
-function operationKey(slot, prefix, { method = 'POST', target, payload = {}, recovery = null }) {
+function operationKey(slot, prefix, { method = 'POST', target, payload = {} }) {
   const fingerprint = JSON.stringify(canonicalRequestValue({
     method: String(method).toUpperCase(),
     target: String(target),
@@ -93,18 +95,16 @@ function operationKey(slot, prefix, { method = 'POST', target, payload = {}, rec
     state.mutationKeys.set(slot, history);
   }
   if (!history.has(fingerprint)) history.set(fingerprint, idempotencyKey(prefix));
-  if (recovery) {
-    let recoveries = state.pendingDraftRecoveries.get(slot);
-    if (!recoveries) {
-      recoveries = new Map();
-      state.pendingDraftRecoveries.set(slot, recoveries);
-    }
-    recoveries.set(fingerprint, {
-      ...structuredClone(recovery),
-      sequence: ++state.recoverySequence,
-    });
-  }
   return history.get(fingerprint);
+}
+
+function holdDraftRecovery(slot, recovery) {
+  if (!slot || !recovery) return;
+  state.pendingDraftRecoveries.set(slot, {
+    ...structuredClone(recovery),
+    discussionId: recovery.discussionId || '',
+    sequence: ++state.recoverySequence,
+  });
 }
 
 function clearOperation(slot) {
@@ -168,10 +168,22 @@ function formatDate(value, { timeOnly = false } = {}) {
     : { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(date);
 }
 
+let announcementSequence = 0;
+
+function clearAnnouncements() {
+  announcementSequence += 1;
+  liveRegion.textContent = '';
+  assertiveRegion.textContent = '';
+}
+
 function announce(message, assertive = false) {
-  const region = assertive ? assertiveRegion : liveRegion;
-  region.textContent = '';
-  requestAnimationFrame(() => { region.textContent = message; });
+  const sequence = ++announcementSequence;
+  liveRegion.textContent = '';
+  assertiveRegion.textContent = '';
+  requestAnimationFrame(() => {
+    if (sequence !== announcementSequence) return;
+    (assertive ? assertiveRegion : liveRegion).textContent = message;
+  });
 }
 
 async function api(path, options = {}) {
@@ -227,6 +239,7 @@ function setFeedback(message, tone = 'error', details = undefined, source = 'act
 }
 
 function clearFeedback() {
+  if (state.feedback?.tone === 'error') clearAnnouncements();
   state.feedback = null;
 }
 
@@ -653,6 +666,22 @@ function syncPackageDraft() {
   if (state.packageDraftVersionId === current.id && state.packageDraft) {
     if (state.packageBaseRowVersion === current.rowVersion) return;
     disarmApproval();
+    const savedDraft = draftFromPackageContent(current.content);
+    if (
+      state.packageDirty
+      && !hasUnresolvedPackageFields()
+      && packageDraftsEqual(normalizedPackageDraft(state.packageDraft), normalizedPackageDraft(savedDraft))
+    ) {
+      state.packageDraft = savedDraft;
+      state.packageBase = { ...savedDraft };
+      state.packageBaseRowVersion = current.rowVersion;
+      state.packageDirty = false;
+      state.packageConflict = null;
+      clearOperation(`package-save:${current.id}`);
+      renderHeader();
+      announce('Your package edits were already saved locally before the response was lost.');
+      return;
+    }
     if (state.packageDirty) {
       state.packageConflict = {
         message: 'This package changed in another view while you were editing.',
@@ -1074,51 +1103,90 @@ function resetWorkspaceTransient() {
   state.pollOutageActive = false;
 }
 
+function restorePackageRecovery(recovery) {
+  const current = state.detail?.workPackage?.currentVersion;
+  const pendingDraft = normalizedPackageDraft(recovery.draft);
+  if (
+    current
+    && current.id === recovery.versionId
+    && packageDraftsEqual(normalizedPackageDraft(draftFromPackageContent(current.content)), pendingDraft)
+  ) {
+    return 'already-durable';
+  }
+  if (current?.status === 'DRAFT') {
+    if (current.id === recovery.versionId && current.rowVersion === recovery.baseRowVersion) {
+      state.packageDraftVersionId = current.id;
+      state.packageDraft = { ...recovery.draft };
+      state.packageBase = { ...recovery.base };
+      state.packageBaseRowVersion = recovery.baseRowVersion;
+      state.packageDirty = true;
+      state.packageConflict = null;
+      state.viewedVersionId = current.id;
+      return 'restored';
+    }
+    installRebasedPackageDraft({ localDraft: recovery.draft, priorBase: recovery.base, current });
+    state.viewedVersionId = current.id;
+    return 'rebased';
+  }
+  state.packageOrphan = {
+    draft: { ...recovery.draft },
+    base: { ...recovery.base },
+    sourceVersionId: recovery.versionId,
+    sourceVersionNumber: recovery.versionNumber || '',
+  };
+  state.packageOrphanFocusPending = true;
+  if (current?.id) state.viewedVersionId = current.id;
+  return 'held';
+}
+
 function consumePendingDraftRecoveries(projectId, discussionId = '') {
   const matching = [];
-  for (const [slot, recoveries] of state.pendingDraftRecoveries) {
-    for (const [fingerprint, recovery] of recoveries) {
-      if (recovery.projectId === projectId && (recovery.discussionId || '') === discussionId) {
-        matching.push({ slot, fingerprint, recovery });
-      }
+  for (const [slot, recovery] of state.pendingDraftRecoveries) {
+    if (recovery.projectId === projectId && recovery.discussionId === discussionId) {
+      matching.push({ slot, recovery });
     }
   }
   if (!matching.length) return false;
-  const latestByType = new Map();
-  for (const item of matching) {
-    const prior = latestByType.get(item.recovery.type);
-    if (!prior || item.recovery.sequence > prior.recovery.sequence) latestByType.set(item.recovery.type, item);
-  }
-  for (const item of matching) {
-    const recoveries = state.pendingDraftRecoveries.get(item.slot);
-    recoveries?.delete(item.fingerprint);
-    if (!recoveries?.size) state.pendingDraftRecoveries.delete(item.slot);
-  }
-  for (const { recovery } of latestByType.values()) {
+  matching.sort((left, right) => left.recovery.sequence - right.recovery.sequence);
+  for (const { slot } of matching) state.pendingDraftRecoveries.delete(slot);
+  let restored = 0;
+  let alreadyDurable = 0;
+  for (const { slot, recovery } of matching) {
     if (recovery.type === 'discussion') {
       state.discussionDraft = { title: recovery.title };
+      restored += 1;
     } else if (recovery.type === 'message') {
       state.composerMode = recovery.mode;
       state.composerDraft = { ...recovery.draft };
       state.composerRevision += 1;
+      restored += 1;
     } else if (recovery.type === 'capture') {
       state.captureDrafts[recovery.messageId] = { ...recovery.draft };
       state.captureMessageId = recovery.messageId;
+      restored += 1;
     } else if (recovery.type === 'replacement') {
       state.replacementDrafts[recovery.pointId] = { ...recovery.draft };
       state.editPointId = recovery.pointId;
+      restored += 1;
     } else if (recovery.type === 'package') {
-      state.packageDraft = { ...recovery.draft };
-      state.packageBase = { ...recovery.base };
-      state.packageBaseRowVersion = recovery.baseRowVersion;
-      state.packageDraftVersionId = recovery.versionId;
-      state.packageDirty = true;
-      state.packageConflict = recovery.conflict ? structuredClone(recovery.conflict) : null;
-      state.viewedVersionId = recovery.versionId;
+      const outcome = restorePackageRecovery(recovery);
+      if (outcome === 'already-durable') {
+        clearOperation(slot);
+        alreadyDurable += 1;
+      } else {
+        state.rightTab = 'package';
+        restored += 1;
+      }
     }
   }
-  announce('Your pending input was restored after returning to this work context.');
-  return true;
+  if (restored) {
+    announce(restored === 1
+      ? 'Your unconfirmed input was restored in this work context. Submit again when you are ready.'
+      : 'Your unconfirmed input was restored in this work context. Submit each entry again when you are ready.');
+  } else if (alreadyDurable) {
+    announce('Your package edits were already saved locally before the response was lost.');
+  }
+  return Boolean(restored || alreadyDurable);
 }
 
 function detailFingerprint(detail) {
@@ -1137,6 +1205,7 @@ function detailFingerprint(detail) {
 
 async function requestBootstrap() {
   const requestSequence = ++state.bootstrapRequestSequence;
+  state.bootstrapRequestsInFlight += 1;
   try {
     const bootstrap = await api('/api/bootstrap');
     if (requestSequence !== state.bootstrapRequestSequence) return null;
@@ -1144,19 +1213,43 @@ async function requestBootstrap() {
   } catch (error) {
     if (requestSequence !== state.bootstrapRequestSequence) return null;
     throw error;
+  } finally {
+    state.bootstrapRequestsInFlight -= 1;
   }
 }
 
+async function resumeAfterSupersededBootstrap() {
+  if (state.bootstrapRequestsInFlight > 0) return;
+  if (!state.bootstrap) {
+    state.phase = 'bootstrap-error';
+    render();
+    return;
+  }
+  state.projects = state.bootstrap.projects;
+  await syncRoute();
+}
+
 async function loadBootstrap() {
+  const loadGeneration = ++state.bootstrapLoadGeneration;
+  const recoveringFromOutage = state.phase === 'bootstrap-error';
+  const isCurrentLoad = () => loadGeneration === state.bootstrapLoadGeneration;
   state.phase = 'loading';
   render();
   try {
     const bootstrap = await requestBootstrap();
-    if (!bootstrap) return;
+    if (!isCurrentLoad()) return;
+    if (!bootstrap) {
+      await resumeAfterSupersededBootstrap();
+      return;
+    }
     state.bootstrap = bootstrap;
     state.projects = state.bootstrap.projects;
     await syncRoute();
+    if (recoveringFromOutage && isCurrentLoad() && !state.feedback) {
+      announce('The local project register is available again.');
+    }
   } catch (error) {
+    if (!isCurrentLoad()) return;
     state.phase = 'bootstrap-error';
     setFeedback(error.message, 'error');
     render();
@@ -1220,6 +1313,7 @@ async function syncRoute() {
       state.discussions = result.discussions;
       state.discussionListUnavailable = false;
       state.phase = 'project';
+      consumePendingDraftRecoveries(project.id);
       render();
     } catch (error) {
       if (generation !== state.routeGeneration) return;
@@ -1246,6 +1340,7 @@ async function syncRoute() {
     state.editPointId = '';
     state.viewedVersionId = state.detail.workPackage?.currentVersion?.id || '';
     syncPackageDraft();
+    consumePendingDraftRecoveries(project.id, route.discussionId);
     render();
   } catch (error) {
     if (generation !== state.routeGeneration) return;
@@ -1407,6 +1502,7 @@ async function withMutation(key, callback, {
   contextProjectId = undefined,
   allowDetachedResult = false,
   unconfirmedSource = 'unconfirmed-mutation',
+  recovery = null,
 } = {}) {
   if (isBusy(key)) return null;
   const boundDiscussionId = contextDiscussionId === undefined && state.phase === 'workspace'
@@ -1431,6 +1527,7 @@ async function withMutation(key, callback, {
   } catch (error) {
     state.detailRequestSequence += 1;
     setBusy(key, false);
+    if (error.code === 'REQUEST_UNCONFIRMED') holdDraftRecovery(operationSlot, recovery);
     if (!isCurrentContext()) {
       renderAfterDetachedMutation();
       announce('The outcome of an action in the planning room you left could not be confirmed.', true);
@@ -1541,6 +1638,7 @@ async function submitDiscussion(form) {
     operationSlot,
     contextRouteGeneration: submissionGeneration,
     contextProjectId: projectId,
+    recovery: { type: 'discussion', projectId, title },
   });
   if (result) {
     clearOperation(operationSlot);
@@ -1593,6 +1691,13 @@ async function submitMessage(form) {
     successMessage: mode === 'owner' || mode === 'imported' ? 'Contribution added.' : 'Planning participant started.',
     operationSlot,
     contextDiscussionId: discussionId,
+    recovery: {
+      type: 'message',
+      projectId: state.projectId,
+      discussionId,
+      mode,
+      draft: { ...state.composerDraft },
+    },
   });
   if (result) {
     clearOperation(operationSlot);
@@ -1619,7 +1724,18 @@ async function submitCapture(form) {
   const result = await withMutation(key, () => api(target, {
     method: 'POST',
     body: { ...payload, idempotencyKey: operationKey(operationSlot, 'point', { target, payload }) },
-  }), { refresh: false, successMessage: 'Planning point proposed for owner decision.', operationSlot });
+  }), {
+    refresh: false,
+    successMessage: 'Planning point proposed for owner decision.',
+    operationSlot,
+    recovery: {
+      type: 'capture',
+      projectId: state.projectId,
+      discussionId: state.discussionId,
+      messageId,
+      draft: { ...payload },
+    },
+  });
   if (result) {
     clearOperation(operationSlot);
     delete state.captureDrafts[messageId];
@@ -1643,7 +1759,18 @@ async function submitReplacement(form) {
   const result = await withMutation(`replace:${pointId}`, () => api(target, {
     method: 'POST',
     body: { ...payload, idempotencyKey: operationKey(operationSlot, 'point-replacement', { target, payload }) },
-  }), { refresh: false, successMessage: 'Replacement proposal created; the earlier proposal remains in history.', operationSlot });
+  }), {
+    refresh: false,
+    successMessage: 'Replacement proposal created; the earlier proposal remains in history.',
+    operationSlot,
+    recovery: {
+      type: 'replacement',
+      projectId: state.projectId,
+      discussionId: state.discussionId,
+      pointId,
+      draft: { pointType: payload.pointType, text: payload.text },
+    },
+  });
   if (result) {
     clearOperation(operationSlot);
     delete state.replacementDrafts[pointId];
@@ -1689,6 +1816,16 @@ async function savePackage({ refresh = true } = {}) {
     contextDiscussionId: discussionId,
     contextRouteGeneration: submissionGeneration,
     allowDetachedResult: true,
+    recovery: {
+      type: 'package',
+      projectId: state.projectId,
+      discussionId,
+      versionId,
+      versionNumber: current.versionNumber,
+      draft: { ...draftSnapshot },
+      base: { ...(state.packageBase || blankPackageDraft()) },
+      baseRowVersion: expected,
+    },
   });
   const sameRoute = state.phase === 'workspace'
     && state.discussionId === discussionId
