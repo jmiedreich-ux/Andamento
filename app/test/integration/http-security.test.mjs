@@ -113,6 +113,37 @@ test('confines implicit owner authority to trusted same-origin JSON requests on 
     },
   );
   await assert.rejects(access(remoteDatabase));
+
+  const remoteProviderDatabase = path.join(fixture.root, 'remote-provider', 'remote.db');
+  for (const codexUrl of [
+    'wss://bridge.example.com/codex',
+    'ws://10.0.0.5:47823',
+    'http://127.0.0.1:47823',
+    'not-a-url',
+  ]) {
+    await assert.rejects(
+      createApplication({ databasePath: remoteProviderDatabase, host: '127.0.0.1', port: 0, codexUrl }),
+      error => {
+        assert.match(error.code, /REMOTE_PROVIDER_REQUIRES_APPROVAL|INVALID_PROVIDER_URL/);
+        return true;
+      },
+      `expected ${codexUrl} to be refused as a provider bridge`,
+    );
+    await assert.rejects(access(remoteProviderDatabase));
+  }
+
+  const invalidPortDatabase = path.join(fixture.root, 'invalid-port', 'invalid.db');
+  for (const port of [70000, -1, 'not-a-port']) {
+    await assert.rejects(
+      createApplication({ databasePath: invalidPortDatabase, host: '127.0.0.1', port }),
+      error => {
+        assert.equal(error.code, 'INVALID_PORT');
+        return true;
+      },
+      `expected port ${port} to be refused`,
+    );
+    await assert.rejects(access(invalidPortDatabase));
+  }
 });
 
 test('serves the health endpoint on the supported IPv6 loopback address', async t => {

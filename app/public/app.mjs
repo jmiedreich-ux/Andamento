@@ -43,7 +43,7 @@ const state = {
   detailRequestSequence: 0,
   bootstrapRequestSequence: 0,
   bootstrapLoadGeneration: 0,
-  bootstrapRequestsInFlight: 0,
+  routeNotice: '',
   mutationKeys: new Map(),
   pendingRefreshOperations: new Map(),
   pendingDraftRecoveries: new Map(),
@@ -105,6 +105,33 @@ function holdDraftRecovery(slot, recovery) {
     discussionId: recovery.discussionId || '',
     sequence: ++state.recoverySequence,
   });
+}
+
+function refreshHeldDraftRecoveries() {
+  for (const recovery of state.pendingDraftRecoveries.values()) {
+    if (recovery.projectId !== state.projectId) continue;
+    if (recovery.type === 'discussion') {
+      if (state.phase === 'project') recovery.title = state.discussionDraft.title;
+      continue;
+    }
+    if (state.phase !== 'workspace' || recovery.discussionId !== state.discussionId) continue;
+    if (recovery.type === 'message') {
+      recovery.mode = state.composerMode;
+      recovery.draft = { ...state.composerDraft };
+    } else if (recovery.type === 'capture') {
+      const draft = state.captureDrafts[recovery.messageId];
+      if (draft) recovery.draft = { ...draft };
+    } else if (recovery.type === 'replacement') {
+      const draft = state.replacementDrafts[recovery.pointId];
+      if (draft) recovery.draft = { ...draft };
+    } else if (recovery.type === 'package'
+      && state.packageDraft
+      && state.packageDraftVersionId === recovery.versionId) {
+      recovery.draft = { ...state.packageDraft };
+      recovery.base = { ...(state.packageBase || blankPackageDraft()) };
+      recovery.baseRowVersion = state.packageBaseRowVersion;
+    }
+  }
 }
 
 function clearOperation(slot) {
@@ -678,8 +705,13 @@ function syncPackageDraft() {
       state.packageDirty = false;
       state.packageConflict = null;
       clearOperation(`package-save:${current.id}`);
+      setFeedback(
+        `Your package edits are already saved in the current draft of v${current.versionNumber}. Nothing further to submit.`,
+        'success',
+        undefined,
+        'recovery',
+      );
       renderHeader();
-      announce('Your package edits were already saved locally before the response was lost.');
       return;
     }
     if (state.packageDirty) {
@@ -1139,6 +1171,47 @@ function restorePackageRecovery(recovery) {
   return 'held';
 }
 
+function heldRecoveryIsDurable(recovery) {
+  if (recovery.type === 'discussion') {
+    return state.discussions.some(item => item.title === recovery.title);
+  }
+  const detail = state.detail;
+  if (!detail) return false;
+  if (recovery.type === 'message') {
+    return recovery.mode === 'owner' || recovery.mode === 'imported'
+      ? detail.messages.some(message => message.content === recovery.draft.content)
+      : detail.runs.some(run => run.prompt === recovery.draft.content);
+  }
+  if (recovery.type === 'capture') {
+    return detail.points.some(point => point.sourceMessageId === recovery.messageId
+      && point.text === recovery.draft.text);
+  }
+  if (recovery.type === 'replacement') {
+    return detail.points.some(point => point.supersedesPointId === recovery.pointId
+      && point.text === recovery.draft.text);
+  }
+  return false;
+}
+
+function heldRecoveryTarget(recovery) {
+  const detail = state.detail;
+  if (recovery.type === 'capture') {
+    return detail?.messages.some(message => message.id === recovery.messageId)
+      ? 'available'
+      : 'source-gone';
+  }
+  if (recovery.type === 'replacement') {
+    const point = detail?.points.find(item => item.id === recovery.pointId);
+    if (!point) return 'source-gone';
+    return point.disposition === 'PROPOSED' ? 'available' : 'decided';
+  }
+  return 'available';
+}
+
+function recoveryScopeLabel(discussionId) {
+  return discussionId ? 'this planning room' : 'this project';
+}
+
 function consumePendingDraftRecoveries(projectId, discussionId = '') {
   const matching = [];
   for (const [slot, recovery] of state.pendingDraftRecoveries) {
@@ -1148,10 +1221,29 @@ function consumePendingDraftRecoveries(projectId, discussionId = '') {
   }
   if (!matching.length) return false;
   matching.sort((left, right) => left.recovery.sequence - right.recovery.sequence);
-  for (const { slot } of matching) state.pendingDraftRecoveries.delete(slot);
+  const scope = recoveryScopeLabel(discussionId);
+  const notices = [];
+  let tone = 'success';
   let restored = 0;
-  let alreadyDurable = 0;
   for (const { slot, recovery } of matching) {
+    if (recovery.type !== 'package' && heldRecoveryIsDurable(recovery)) {
+      clearOperation(slot);
+      notices.push('Your unconfirmed entry was already saved before its receipt was lost. Nothing further to submit.');
+      continue;
+    }
+    const target = heldRecoveryTarget(recovery);
+    if (target === 'decided') {
+      clearOperation(slot);
+      tone = 'warning';
+      notices.push('The proposal you were editing has since been decided, so your replacement was not created. Capture a new proposal from its source contribution.');
+      continue;
+    }
+    if (target === 'source-gone') {
+      clearOperation(slot);
+      tone = 'warning';
+      notices.push('The contribution your unconfirmed entry belonged to is no longer available, so it was not saved.');
+      continue;
+    }
     if (recovery.type === 'discussion') {
       state.discussionDraft = { title: recovery.title };
       restored += 1;
@@ -1170,23 +1262,33 @@ function consumePendingDraftRecoveries(projectId, discussionId = '') {
       restored += 1;
     } else if (recovery.type === 'package') {
       const outcome = restorePackageRecovery(recovery);
+      const versionNumber = state.detail?.workPackage?.currentVersion?.versionNumber || recovery.versionNumber;
       if (outcome === 'already-durable') {
         clearOperation(slot);
-        alreadyDurable += 1;
+        notices.push(`Your package edits are already saved in the current draft of v${versionNumber}. Nothing further to submit.`);
+        continue;
+      }
+      state.rightTab = 'package';
+      tone = 'warning';
+      if (outcome === 'rebased') {
+        notices.push(`Your held package edits are reapplied to the latest saved v${versionNumber} in the package station. Resolve every marked field before saving.`);
+      } else if (outcome === 'held') {
+        notices.push('The package advanced while your save was unconfirmed. Your edits are held in the package station for explicit recovery.');
       } else {
-        state.rightTab = 'package';
-        restored += 1;
+        notices.push(`Your unsaved package edits are restored in the package station. Nothing was saved to v${versionNumber} yet.`);
       }
     }
   }
   if (restored) {
-    announce(restored === 1
-      ? 'Your unconfirmed input was restored in this work context. Submit again when you are ready.'
-      : 'Your unconfirmed input was restored in this work context. Submit each entry again when you are ready.');
-  } else if (alreadyDurable) {
-    announce('Your package edits were already saved locally before the response was lost.');
+    tone = 'warning';
+    notices.push(restored === 1
+      ? `Your unconfirmed entry is restored in ${scope}. Nothing was submitted; submit it again when you are ready.`
+      : `Your unconfirmed entries are restored in ${scope}. Nothing was submitted; submit each one again when you are ready.`);
   }
-  return Boolean(restored || alreadyDurable);
+  if (!notices.length) return false;
+  const message = notices.join(' ');
+  setFeedback(message, tone, undefined, 'recovery');
+  return true;
 }
 
 function detailFingerprint(detail) {
@@ -1205,7 +1307,6 @@ function detailFingerprint(detail) {
 
 async function requestBootstrap() {
   const requestSequence = ++state.bootstrapRequestSequence;
-  state.bootstrapRequestsInFlight += 1;
   try {
     const bootstrap = await api('/api/bootstrap');
     if (requestSequence !== state.bootstrapRequestSequence) return null;
@@ -1213,13 +1314,10 @@ async function requestBootstrap() {
   } catch (error) {
     if (requestSequence !== state.bootstrapRequestSequence) return null;
     throw error;
-  } finally {
-    state.bootstrapRequestsInFlight -= 1;
   }
 }
 
 async function resumeAfterSupersededBootstrap() {
-  if (state.bootstrapRequestsInFlight > 0) return;
   if (!state.bootstrap) {
     state.phase = 'bootstrap-error';
     render();
@@ -1259,6 +1357,7 @@ async function loadBootstrap() {
 async function syncRoute() {
   const generation = ++state.routeGeneration;
   clearTimeout(state.pollTimer);
+  refreshHeldDraftRecoveries();
   if (state.phase === 'loading' && !state.bootstrap) {
     render();
     return;
@@ -1277,6 +1376,10 @@ async function syncRoute() {
   if (leavesWorkspace) resetWorkspaceTransient();
   if (state.projectId && nextProjectId && state.projectId !== nextProjectId) state.discussionDraft = { title: '' };
   clearFeedback();
+  if (state.routeNotice) {
+    setFeedback(state.routeNotice, 'error');
+    state.routeNotice = '';
+  }
   if (route.name === 'new-project' || !state.projects.length) {
     state.phase = 'new-project';
     if (!state.projects.length) state.projectId = '';
@@ -1291,7 +1394,7 @@ async function syncRoute() {
   }
   const project = state.projects.find(item => item.id === route.projectId);
   if (!project) {
-    setFeedback('That project is no longer available.', 'error');
+    state.routeNotice = 'That project is no longer available.';
     location.replace(`#/projects/${state.projects[0].id}`);
     return;
   }
@@ -1354,6 +1457,7 @@ async function syncRoute() {
       if (generation !== state.routeGeneration) return;
       state.discussions = fallback.discussions;
       state.discussionListUnavailable = false;
+      consumePendingDraftRecoveries(project.id);
     } catch {
       if (generation !== state.routeGeneration) return;
       state.discussionListUnavailable = true;

@@ -12,5 +12,5 @@
     "sharedFilesOwnedBy": "coordinating-agent; claimed from the takeover checkpoint to finish route-scoped recovery and restore the local gates"
   },
   "status": "READY_FOR_INDEPENDENT_REVIEW",
-  "notes": "Route-scoped pending-input recovery, bootstrap supersession, stale-read alert suppression, and lost-receipt package reconciliation are complete. Local gates pass: npm test 53/53, coverage 90.23% lines, Playwright 10/10, npm audit 0 vulnerabilities, 16/16 runtime invariants. A bounded Impeccable finish review and an independent exact-head review by a non-author remain open; owner acceptance is not recorded."
+  "notes": "Route-scoped pending-input recovery, bootstrap supersession, stale-read alert suppression, and lost-receipt package reconciliation are complete, and round-one review findings are fixed. Local gates pass: npm test 53/53, coverage 90.33% lines for server code, Playwright 10/10, npm audit 0 vulnerabilities, 16/16 runtime invariants. Three agent reviews covered commit 42cdc5f, which the fixes supersede, so a fresh exact-head review is required before merge; owner acceptance is not recorded."
 }

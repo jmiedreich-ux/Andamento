@@ -1481,8 +1481,63 @@ test.describe.serial('Night 1 planning loop', () => {
     await page.goto(routeFor(workspace));
 
     const messageEndpoint = `/api/discussions/${workspace.discussion.id}/messages`;
-    const lostMessage = 'This owner context is typed once while its receipt is lost.';
+    const unsentMessage = 'This owner context never reached the local service.';
+    const appendedMessage = `${unsentMessage} It also keeps the sentence typed after the refusal.`;
     const messageKeys = [];
+    let refuseMessageArmed = true;
+    const refuseOneMessage = async route => {
+      if (route.request().method() !== 'POST') {
+        await route.continue();
+        return;
+      }
+      messageKeys.push(route.request().postDataJSON().idempotencyKey);
+      if (refuseMessageArmed) {
+        refuseMessageArmed = false;
+        await route.abort('failed');
+        return;
+      }
+      await route.continue();
+    };
+    await page.route(`**${messageEndpoint}`, refuseOneMessage);
+    try {
+      await page.getByLabel('Add owner context').fill(unsentMessage);
+      await page.getByRole('button', { name: 'Add to discussion', exact: true }).click();
+      await expect(page.getByRole('button', { name: 'Add to discussion', exact: true })).toBeEnabled();
+      expect(messageKeys).toHaveLength(1);
+
+      await goToHash(siblingHash);
+      await expect(page.getByRole('heading', { name: siblingRoom.title, exact: true })).toBeVisible();
+      await expect(page.getByLabel('Add owner context')).toHaveValue('');
+      await goToHash(elsewhereHash);
+      await expect(page.getByRole('heading', { name: elsewhere.discussion.title, exact: true })).toBeVisible();
+      await expect(page.getByLabel('Add owner context')).toHaveValue('');
+
+      await goToHash(roomHash);
+      await expect(page.getByRole('heading', { name: workspace.discussion.title, exact: true })).toBeVisible();
+      await expect(page.getByLabel('Add owner context')).toHaveValue(unsentMessage);
+      await expect(page.locator('.feedback[data-tone]')).toContainText('Nothing was submitted');
+
+      // Editing after the refusal must survive, and a second leave must not lose the input.
+      await page.getByLabel('Add owner context').fill(appendedMessage);
+      await goToHash(siblingHash);
+      await expect(page.getByRole('heading', { name: siblingRoom.title, exact: true })).toBeVisible();
+      await goToHash(roomHash);
+      await expect(page.getByRole('heading', { name: workspace.discussion.title, exact: true })).toBeVisible();
+      await expect(page.getByLabel('Add owner context')).toHaveValue(appendedMessage);
+
+      await page.getByRole('button', { name: 'Add to discussion', exact: true }).click();
+      await expect(page.getByLabel('Add owner context')).toHaveValue('');
+      await expect(page.getByText(appendedMessage, { exact: true })).toBeVisible();
+    } finally {
+      await page.unroute(`**${messageEndpoint}`, refuseOneMessage);
+    }
+    const recoveredMessages = await json(await request.get(`/api/discussions/${workspace.discussion.id}`));
+    expect(recoveredMessages.messages.filter(message => message.content === appendedMessage)).toHaveLength(1);
+    expect(recoveredMessages.messages.filter(message => message.content === unsentMessage)).toHaveLength(0);
+
+    // A mutation that committed before its receipt was lost must NOT be offered back as unsent input.
+    const durableMessage = 'This owner context committed before its receipt was lost.';
+    const durableMessageKeys = [];
     let loseMessageReceiptArmed = true;
     let markMessageReceiptLost;
     const messageReceiptLost = new Promise(resolve => { markMessageReceiptLost = resolve; });
@@ -1491,7 +1546,7 @@ test.describe.serial('Night 1 planning loop', () => {
         await route.continue();
         return;
       }
-      messageKeys.push(route.request().postDataJSON().idempotencyKey);
+      durableMessageKeys.push(route.request().postDataJSON().idempotencyKey);
       if (loseMessageReceiptArmed) {
         loseMessageReceiptArmed = false;
         const response = await route.fetch();
@@ -1504,32 +1559,24 @@ test.describe.serial('Night 1 planning loop', () => {
     };
     await page.route(`**${messageEndpoint}`, loseOneMessageReceipt);
     try {
-      await page.getByLabel('Add owner context').fill(lostMessage);
+      await page.getByLabel('Add owner context').fill(durableMessage);
       await page.getByRole('button', { name: 'Add to discussion', exact: true }).click();
       await messageReceiptLost;
       await expect(page.getByRole('button', { name: 'Add to discussion', exact: true })).toBeEnabled();
 
       await goToHash(siblingHash);
       await expect(page.getByRole('heading', { name: siblingRoom.title, exact: true })).toBeVisible();
-      await expect(page.getByLabel('Add owner context')).toHaveValue('');
-      await goToHash(elsewhereHash);
-      await expect(page.getByRole('heading', { name: elsewhere.discussion.title, exact: true })).toBeVisible();
-      await expect(page.getByLabel('Add owner context')).toHaveValue('');
-
       await goToHash(roomHash);
       await expect(page.getByRole('heading', { name: workspace.discussion.title, exact: true })).toBeVisible();
-      await expect(page.getByLabel('Add owner context')).toHaveValue(lostMessage);
-      await expect(page.locator('#liveRegion')).toContainText('unconfirmed input was restored');
-
-      await page.getByRole('button', { name: 'Add to discussion', exact: true }).click();
+      await expect(page.getByText(durableMessage, { exact: true })).toBeVisible();
+      await expect(page.locator('.feedback[data-tone]')).toContainText('already saved before its receipt was lost');
       await expect(page.getByLabel('Add owner context')).toHaveValue('');
-      expect(messageKeys).toHaveLength(2);
-      expect(messageKeys[0]).toBe(messageKeys[1]);
+      expect(durableMessageKeys).toHaveLength(1);
     } finally {
       await page.unroute(`**${messageEndpoint}`, loseOneMessageReceipt);
     }
-    const recoveredMessages = await json(await request.get(`/api/discussions/${workspace.discussion.id}`));
-    expect(recoveredMessages.messages.filter(message => message.content === lostMessage)).toHaveLength(1);
+    const durableMessages = await json(await request.get(`/api/discussions/${workspace.discussion.id}`));
+    expect(durableMessages.messages.filter(message => message.content === durableMessage)).toHaveLength(1);
 
     const captureSource = await addMessageApi(request, workspace.discussion.id, 'Source contribution for unconfirmed capture recovery.');
     const captureEndpoint = `/api/messages/${captureSource.message.id}/planning-points`;
@@ -1642,7 +1689,7 @@ test.describe.serial('Night 1 planning loop', () => {
       await packageReceiptLost;
       await expect(page.getByRole('button', { name: 'Draft saved', exact: true })).toBeVisible({ timeout: 9_000 });
       await expect(page.getByLabel('Outcome')).toHaveValue(durableOutcome);
-      await expect(page.locator('#liveRegion')).toContainText('already saved locally');
+      await expect(page.locator('.feedback[data-tone]')).toContainText('already saved in the current draft of v1');
       await expect(page.getByText('This package changed in another view while you were editing.')).toHaveCount(0);
       await expect(page.getByRole('button', { name: 'Resolve conflicts to save' })).toHaveCount(0);
       await expect(page.locator('.local-status')).toHaveText('Local service ready');
@@ -1726,10 +1773,62 @@ test.describe.serial('Night 1 planning loop', () => {
     const recoveredRooms = await json(await request.get(roomEndpoint));
     expect(recoveredRooms.discussions.filter(discussion => discussion.title === heldRoomTitle)).toHaveLength(1);
 
-    await page.getByLabel('Add owner context').fill('This unsent draft is discarded by a full page reload.');
+    // A replacement whose point was decided elsewhere must refuse honestly, not announce a phantom restore.
+    const decidedSource = await addMessageApi(request, workspace.discussion.id, 'Source contribution for a point decided during an unconfirmed edit.');
+    const decidedPoint = await capturePointApi(request, decidedSource.message.id, 'This proposal is decided while its replacement is unconfirmed.');
+    const decidedReplacementEndpoint = `/api/planning-points/${decidedPoint.id}/replacement`;
+    const refuseDecidedReplacement = async route => route.abort('failed');
+    await goToHash(roomHash);
+    await expect(page.getByRole('heading', { name: workspace.discussion.title, exact: true })).toBeVisible();
+    await page.route(`**${decidedReplacementEndpoint}`, refuseDecidedReplacement);
+    try {
+      const decidedRow = page.locator(`#point-${decidedPoint.id}`);
+      await expect(decidedRow).toBeVisible();
+      await decidedRow.getByRole('button', { name: 'Edit proposal' }).click();
+      await decidedRow.getByLabel('Replacement proposal').fill('This replacement never reaches the local service.');
+      await decidedRow.getByRole('button', { name: 'Create replacement' }).click();
+      await expect(decidedRow.getByRole('button', { name: 'Create replacement' })).toBeEnabled();
+
+      await dispositionPointApi(request, decidedPoint, 'ACCEPTED');
+      await goToHash(siblingHash);
+      await expect(page.getByRole('heading', { name: siblingRoom.title, exact: true })).toBeVisible();
+      await goToHash(roomHash);
+      await expect(page.getByRole('heading', { name: workspace.discussion.title, exact: true })).toBeVisible();
+      await expect(page.locator('.feedback[data-tone]')).toContainText('has since been decided');
+      await expect(page.getByLabel('Replacement proposal')).toHaveCount(0);
+      await expect(page.locator(`#point-${decidedPoint.id}`)).toHaveAttribute('data-state', 'ACCEPTED');
+    } finally {
+      await page.unroute(`**${decidedReplacementEndpoint}`, refuseDecidedReplacement);
+    }
+
+    // The reload boundary: a HELD recovery record does not survive a full page reload.
+    const discardedByReload = 'This held recovery record is discarded by a full page reload.';
+    const refuseReloadMessage = async route => {
+      if (route.request().method() !== 'POST') {
+        await route.continue();
+        return;
+      }
+      await route.abort('failed');
+    };
+    await page.route(`**${messageEndpoint}`, refuseReloadMessage);
+    try {
+      await page.getByLabel('Add owner context').fill(discardedByReload);
+      await page.getByRole('button', { name: 'Add to discussion', exact: true }).click();
+      await expect(page.getByRole('button', { name: 'Add to discussion', exact: true })).toBeEnabled();
+      await goToHash(siblingHash);
+      await expect(page.getByRole('heading', { name: siblingRoom.title, exact: true })).toBeVisible();
+      await goToHash(roomHash);
+      await expect(page.getByLabel('Add owner context')).toHaveValue(discardedByReload);
+    } finally {
+      await page.unroute(`**${messageEndpoint}`, refuseReloadMessage);
+    }
     await page.reload();
-    await expect(page.getByRole('heading', { name: heldRoomTitle, exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: workspace.discussion.title, exact: true })).toBeVisible();
+    await expect(page.getByText(appendedMessage, { exact: true })).toBeVisible();
     await expect(page.getByLabel('Add owner context')).toHaveValue('');
+    await expect(page.locator('.feedback[data-tone]')).toHaveCount(0);
+    const afterReload = await json(await request.get(`/api/discussions/${workspace.discussion.id}`));
+    expect(afterReload.messages.filter(message => message.content === discardedByReload)).toHaveLength(0);
   });
 
   test('authority-immutability-idempotency', async ({ page, request }) => {

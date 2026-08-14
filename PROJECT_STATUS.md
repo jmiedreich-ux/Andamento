@@ -10,7 +10,8 @@
 - **Existing prototype:** Google Sheets, Apps Script, and the Codex relay remain behavioral and integration evidence only. They are neither the intended authoritative backend nor visual design inputs for the new product.
 - **Repository state:** Private GitHub repository `https://github.com/jmiedreich-ux/Andamento`; work continues on `feature/planning-loop-m1`, published as draft PR [#1](https://github.com/jmiedreich-ux/Andamento/pull/1).
 - **Implementation state:** Planning Loop Milestone 1 (`AND-N1-PLANNING-LOOP-v1`) is implementation-complete on `feature/planning-loop-m1`. The backend authority remediation and the browser recovery work that blocked the takeover checkpoint are both finished.
-- **Verification state:** Implementation verification passes 53/53, coverage reports 90.23% lines and 88.17% functions, Playwright passes 10/10 including two new recovery specifications, `npm audit --audit-level=high` reports 0 vulnerabilities, and the running service reports all 16 invariants passing. The visual surface is unchanged by this delta, so the earlier Impeccable evidence still describes it, but a bounded finish review of the changed behavior by a non-author has not been run. Independent exact-head review and owner acceptance remain pending.
+- **Verification state:** Implementation verification passes 53/53, coverage reports 90.33% lines and 88.30% functions for server code, Playwright passes 10/10 including two new recovery specifications, `npm audit --audit-level=high` reports 0 vulnerabilities, and the running service reports all 16 invariants passing. Coverage does not describe the browser delta, which is proved by Playwright alone.
+- **Review state:** Three independent agent reviews ran against commit `42cdc5f` — Impeccable finish review (FAIL, 8 material findings), implementation review (REQUEST_CHANGES, 4 material findings), and security review (LOW residual risk, no CRITICAL or HIGH). All material findings were fixed or explicitly recorded as accepted risk or backlog in the feature record. Those fixes create a new head, so a fresh exact-head review is required before merge. Owner acceptance remains pending.
 - **CI state:** Not configured.
 
 ## Working Model
@@ -33,4 +34,4 @@ Repository execution, implementation evidence, product review, and final product
 
 ## Exact Next Action
 
-Obtain a bounded Impeccable finish review and an independent implementation and security review of the exact head of `feature/planning-loop-m1` from a reviewer who did not author it, then answer the reload-durability question in `docs/features/planning-loop/open-questions.md` before the owner acceptance walkthrough.
+Obtain a fresh independent review of the current head of `feature/planning-loop-m1`, since the first round's findings were fixed and the reviewed commit `42cdc5f` is superseded, then answer the reload-durability question in `docs/features/planning-loop/open-questions.md` before the owner acceptance walkthrough.
