@@ -1,0 +1,12 @@
+{
+  "name": "vennusign-workbench-relay",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start": "node relay.js",
+    "test": "node --test relay.test.js"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4"
+  }
+}

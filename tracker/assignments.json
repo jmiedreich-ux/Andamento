@@ -1,0 +1,7 @@
+{
+  "updatedUtc": "2026-08-14T09:19:34Z",
+  "policy": "One active implementation milestone at a time. No two agents may modify the same file concurrently.",
+  "activeAssignment": null,
+  "status": "NO_ACTIVE_CLAIM",
+  "notes": "The private Andamento repository is established on GitHub. Product and process design remain proposed; no application implementation is authorized until the first feature design and milestone are owner-approved."
+}

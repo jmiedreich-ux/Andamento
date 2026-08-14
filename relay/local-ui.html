@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>VennuSign Workbench</title>
+    <style>
+      @font-face { font-family: "Vennu Display"; src: url("/assets/vennu-display.woff2") format("woff2"); font-style: normal; font-weight: 600; font-display: swap; }
+      :root { color-scheme: light; font-family: Aptos, "Segoe UI", sans-serif; font-size: 14px; color: #14283f; background: #dce8ee; font-synthesis: none; text-rendering: optimizeLegibility; }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; padding: 7px; overflow: hidden; background: #dce8ee; }
+      button, textarea, input { font: inherit; }
+      button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px solid #1967d2; outline-offset: 2px; }
+      .app { width: min(1510px, 100%); height: calc(100vh - 14px); min-height: 0; margin: 0 auto; display: grid; grid-template-columns: 326px minmax(0,1fr); grid-template-rows: auto minmax(220px,1fr) auto auto; overflow: hidden; border: 1px solid #afc3ce; border-top: 4px solid #36c2eb; background: #f7fafc; box-shadow: 0 10px 34px rgba(0,0,0,.11); }
+      header { position: sticky; top: 0; z-index: 3; grid-column: 1; grid-row: 1 / 5; align-self: start; height: 100%; min-height: 0; overflow-y: auto; scrollbar-width: thin; display: flex; flex-direction: column; gap: 22px; padding: 28px 24px 18px; border-right: 1px solid #18516a; background: #102f43; color: #f5fbff; }
+      .brand-lockup { display: grid; grid-template-columns: 11px 1fr; gap: 13px; align-items: center; }
+      .brand-signal { width: 11px; height: 42px; display: grid; grid-template-rows: 2fr 1fr; gap: 4px; }
+      .brand-signal::before, .brand-signal::after { content: ""; display: block; border-radius: 2px; }
+      .brand-signal::before { background: #36c2eb; }
+      .brand-signal::after { background: #ffbd59; }
+      h1 { margin: 0; max-width: 180px; font-family: "Vennu Display", Georgia, serif; font-size: 24px; line-height: 1.08; font-weight: 600; letter-spacing: 0; }
+      .connection { display: flex; align-items: center; gap: 8px; margin: 7px 0 0 24px; color: #bcd0dc; font-size: 12px; font-weight: 600; }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: #9aa0a6; }
+      .connection.online .dot { background: #43d18b; box-shadow: 0 0 0 4px rgba(67,209,139,.13); }
+      .connection.offline .dot { background: #d93025; }
+      .rail-tools { display: grid; gap: 10px; margin-top: 8px; padding-top: 18px; border-top: 1px solid rgba(216,239,250,.14); }
+      .rail-heading { margin: 0; color: #8eb1c2; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
+      .rail-title-row { min-height: 32px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+      .thread-actions { display: flex; gap: 12px; }
+      .thread-row { display: block; }
+      .thread-row select { width: 100%; }
+      select { min-width: 0; height: 40px; border: 1px solid rgba(205,231,242,.28); border-radius: 6px; padding: 0 30px 0 10px; color: #eef9ff; background: #153e54; font: inherit; font-size: 12px; font-weight: 600; }
+      select:focus-visible { outline: 2px solid #36c2eb; outline-offset: 2px; }
+      .new-thread, .manage-threads { width: auto; min-height: 34px; display: inline-flex; align-items: center; gap: 6px; padding: 0; border: 0; color: #eef9ff; background: transparent; font-size: 12px; }
+      .new-thread .control-icon, .manage-threads .control-icon { width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid rgba(205,231,242,.34); border-radius: 6px; background: #153e54; font-size: 18px; }
+      .milestones { display: grid; gap: 0; margin: 2px 0 0 4px; padding: 0; list-style: none; }
+      .milestone { position: relative; display: grid; grid-template-columns: 12px 1fr; gap: 9px; min-height: 48px; color: #d8edf6; }
+      .milestone:not(:last-child)::before { content: ""; position: absolute; top: 12px; bottom: -2px; left: 5px; width: 1px; background: #397087; }
+      .milestone-dot { position: relative; z-index: 1; width: 11px; height: 11px; margin-top: 2px; border: 2px solid #102f43; border-radius: 50%; background: #5f8496; box-shadow: 0 0 0 1px #5f8496; }
+      .milestone.complete .milestone-dot { background: #43d18b; box-shadow: 0 0 0 1px #43d18b; }
+      .milestone.current .milestone-dot { background: #ffbd59; box-shadow: 0 0 0 1px #ffbd59; }
+      .milestone-copy { display: grid; gap: 2px; padding-bottom: 14px; }
+      .milestone-copy strong { font-size: 12px; line-height: 1.25; }
+      .milestone-copy span { color: #8eb1c2; font-size: 10px; }
+      .header-actions { order: 4; display: grid; grid-template-columns: 1fr 40px; gap: 8px; margin-top: auto; }
+      button { min-height: 40px; border: 1px solid #b9cbd5; border-radius: 6px; padding: 8px 13px; background: #fff; color: #174d68; font-weight: 700; cursor: pointer; transition: border-color .16s ease, background .16s ease, color .16s ease, transform .16s ease; }
+      button:hover:not(:disabled) { border-color: #087fa5; background: #effaff; color: #075f7d; }
+      button:active:not(:disabled) { transform: translateY(1px); }
+      button:disabled { opacity: .55; cursor: default; }
+      .icon { width: 38px; padding: 0; font-size: 19px; }
+      .clear { border-color: rgba(205,231,242,.25); background: rgba(255,255,255,.06); color: #d8edf6; }
+      .icon { border-color: rgba(205,231,242,.25); background: rgba(255,255,255,.06); color: #d8edf6; }
+      .work-status { display: flex; align-items: center; gap: 10px; min-height: 40px; margin-top: 12px; padding: 9px 12px; border: 1px solid #b9dbe8; border-radius: 6px; background: #effaff; color: #14536c; font-size: 13px; font-weight: 650; line-height: 1.4; }
+      .work-status[data-kind="success"] { border-color: #b8ddcd; background: #eef9f4; color: #176447; }
+      .work-status[data-kind="error"] { border-color: #efc4ca; background: #fff3f4; color: #962f3e; }
+      .work-status[data-kind="success"] .pulse { animation: none; background: #2da873; box-shadow: none; }
+      .work-status[data-kind="error"] .pulse { animation: none; background: #c83f50; box-shadow: none; }
+      .work-status[hidden] { display: none; }
+      .pulse { width: 9px; height: 9px; flex: 0 0 auto; margin-top: 4px; border-radius: 50%; background: #36c2eb; box-shadow: 0 0 0 4px rgba(54,194,235,.14); animation: pulse 1.35s ease-in-out infinite; }
+      @keyframes pulse { 50% { opacity: .38; box-shadow: 0 0 0 8px rgba(54,194,235,0); } }
+      @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }
+      .conversation-bar { grid-column: 2; grid-row: 1; min-width: 0; padding: 18px 28px 15px; background: #fff; }
+      .conversation-bar-inner { width: 100%; display: grid; gap: 4px; margin: 0 auto; }
+      .conversation-bar-inner > span { color: #487086; font-size: 10px; font-weight: 800; letter-spacing: .1em; }
+      .conversation-bar-inner > strong { min-width: 0; overflow: hidden; color: #153e54; font-size: 18px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+      .conversation-ident { display: flex; align-items: center; gap: 8px; min-width: 0; margin-top: 4px; color: #087fa5; font-size: 12px; font-weight: 700; }
+      .session-id { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .copy-session, .phone-connect { width: 28px; min-height: 28px; flex: 0 0 auto; display: grid; place-items: center; padding: 0; border: 1px solid #c7d8e1; border-radius: 6px; color: #35647a; background: #f7fafc; text-decoration: none; }
+      main { grid-column: 2; grid-row: 2; min-width: 0; min-height: 0; overflow: hidden; padding: 0 28px 18px; background: #f7fafc; }
+      main::-webkit-scrollbar { width: 10px; }
+      main::-webkit-scrollbar-track { background: #edf3f6; }
+      main::-webkit-scrollbar-thumb { border: 2px solid #edf3f6; border-radius: 6px; background: #91aebb; }
+      #conversation { height: 100%; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; max-width: none; margin: 0; padding: 20px 28px 48px; border: 1px solid #bfd0d9; border-radius: 5px; background: #fff; }
+      #conversation:not(.empty)::after { content: ""; display: block; height: 28px; }
+      .empty { min-height: 58vh; display: grid; place-items: center; color: #526b7c; text-align: center; font-size: 15px; }
+      .message { position: relative; width: 100%; margin: 0 0 18px; padding: 0 0 18px 62px; border-bottom: 1px solid #dbe5ea; }
+      .message::before { content: "C"; position: absolute; top: 0; left: 0; width: 34px; height: 34px; display: grid; place-items: center; border-radius: 8px; background: #dff6ff; color: #08789c; font-size: 12px; font-weight: 800; }
+      .message.user { margin-left: 0; }
+      .message.user::before { content: "YOU"; background: #e6f7ef; color: #167558; font-size: 9px; }
+      .message.error::before { content: "!"; background: #fff0f2; color: #a12d40; }
+      .message.error { color: #842d3b; }
+      .meta { display: flex; justify-content: space-between; gap: 20px; min-height: 22px; margin-bottom: 5px; color: #607687; font-size: 11px; font-weight: 700; }
+      .meta span:first-child { color: #1b3d54; font-size: 12px; }
+      .body { max-width: 72ch; color: #203b50; font-size: 15px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+      .approval-panel { grid-column: 2; grid-row: 3; margin: 0 28px 14px; padding: 18px; border: 1px solid #bfd0d9; border-radius: 5px; background: #fff; }
+      .approval-panel[hidden] { display: none; }
+      .approval-summary { display: grid; grid-template-columns: 46px minmax(0,1fr) auto; gap: 14px; align-items: center; }
+      .approval-mark { width: 46px; height: 46px; display: grid; place-items: center; border-radius: 7px; color: #d48722; background: #fff4e6; font-size: 24px; }
+      .approval-copy { min-width: 0; }
+      .approval-copy h2 { margin: 0 0 4px; font-size: 18px; letter-spacing: 0; }
+      .approval-copy p { margin: 0; overflow: hidden; color: #526b7c; text-overflow: ellipsis; white-space: nowrap; }
+      .approval-state { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border: 1px solid #efc477; border-radius: 6px; color: #a7620d; background: #fff9ef; font-weight: 700; }
+      .approval-state::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: #e4a137; }
+      .approval-actions { display: flex; gap: 12px; margin-top: 16px; padding-top: 14px; border-top: 1px solid #dbe5ea; }
+      .approval-actions .primary { margin-left: 0; }
+      .composer { z-index: 2; grid-column: 2; grid-row: 4; width: auto; padding: 16px 28px 14px; border-top: 1px solid #ccdae1; background: #eef5f8; box-shadow: none; }
+      .composer::before { content: "COMMAND DECK"; display: block; width: 100%; margin: 0 auto 8px; color: #487086; font-size: 10px; font-weight: 800; letter-spacing: .1em; }
+      textarea { display: block; width: 100%; min-height: 82px; max-height: 180px; margin: 0 auto; resize: vertical; border: 1px solid #9fb8c5; border-radius: 5px; padding: 12px 128px 12px 14px; color: #14283f; background: #fff; font-size: 15px; line-height: 1.55; box-shadow: inset 0 1px 2px rgba(16,47,67,.04); }
+      textarea:focus { outline: 3px solid rgba(54,194,235,.28); border-color: #087fa5; }
+      .actions { width: 100%; display: flex; justify-content: flex-end; margin: -58px 10px 18px 0; pointer-events: none; }
+      .actions button { pointer-events: auto; }
+      .primary { margin-left: auto; min-width: 92px; color: #fff; background: #087fa5; border-color: #087fa5; box-shadow: 0 6px 16px rgba(8,127,165,.2); }
+      .primary:hover:not(:disabled) { background: #076b8c; color: #fff; }
+      .danger { color: #b3261e; }
+      dialog { width: min(420px, calc(100% - 32px)); border: 0; border-radius: 8px; padding: 0; box-shadow: 0 8px 28px rgba(60,64,67,.3); }
+      dialog::backdrop { background: rgba(32,33,36,.45); }
+      .dialog-body { padding: 22px 22px 14px; }
+      .dialog-body h2 { margin: 0 0 10px; font-size: 18px; }
+      .dialog-body p { margin: 0; color: #5f6368; line-height: 1.45; }
+      .dialog-body label { display: grid; gap: 8px; color: #1b3d54; font-size: 12px; font-weight: 700; }
+      .dialog-body input { width: 100%; height: 42px; border: 1px solid #9fb8c5; border-radius: 6px; padding: 0 11px; color: #14283f; background: #fff; font-size: 14px; }
+      .dialog-body select { width: 100%; color: #14283f; background: #fff; border-color: #9fb8c5; }
+      .dialog-status { min-height: 20px; margin-top: 12px !important; color: #487086 !important; font-size: 12px; font-weight: 600; }
+      .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 22px 18px; }
+      .confirm { color: #fff; background: #b3261e; border-color: #b3261e; }
+      @media (max-width: 760px) { body { padding: 0; } .app { width: 100%; height: 100vh; display: grid; grid-template-columns: 1fr; grid-template-rows: auto auto minmax(0,1fr) auto auto; border-width: 4px 0 0; } header { position: relative; grid-column: 1; grid-row: 1; height: auto; min-height: 0; overflow: visible; display: flex; flex-direction: column; gap: 12px; padding: 15px 14px; border-right: 0; border-bottom: 1px solid #18516a; } .brand-lockup { grid-column: auto; }.brand-signal { height: 34px; } h1 { max-width: none; font-size: 19px; }.connection { margin: 5px 0 0 24px; }.rail-tools { margin-top: 2px; padding-top: 12px; }.rail-tools[aria-labelledby="milestoneLabel"] { display: none; }.thread-actions { gap: 6px; }.thread-actions button > span:last-child { display: none; }.header-actions { display: none; }.conversation-bar { grid-column: 1; grid-row: 2; padding: 12px 14px; } main { grid-column: 1; grid-row: 3; min-height: 0; padding: 0 14px 12px; }.message { padding-left: 44px; }.approval-panel { grid-column: 1; grid-row: 4; margin: 0 14px 10px; }.approval-summary { grid-template-columns: 40px minmax(0,1fr); }.approval-state { grid-column: 1 / -1; }.approval-actions { flex-wrap: wrap; }.composer { grid-column: 1; grid-row: 5; padding: 15px 14px 16px; }.primary { margin-left: 0; } }
+    </style>
+  </head>
+  <body>
+    <!--
+      THESIS: A live operations dispatch desk, refusing the generic centered chat panel.
+      OWN-WORLD: VennuSign sky blue, slate ink, proof green, signal amber, and a disciplined transmission log.
+      STORY: Connection is proven first; commands enter a durable log; Codex work remains visible until resolved.
+      FIRST VIEWPORT: Signal rail at left, chronological dispatch log at center, command deck anchored below.
+      FORM: Operations Dispatch, grounded structure 6, seed dcc167e2.
+      FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
+    -->
+    <div class="app">
+      <header>
+        <div><div class="brand-lockup"><span class="brand-signal"></span><h1>VennuSign Workbench</h1></div><div id="connection" class="connection"><span class="dot"></span><span>Connecting</span></div></div>
+        <section class="rail-tools" aria-labelledby="conversationLabel"><div class="rail-title-row"><h2 id="conversationLabel" class="rail-heading">Conversation</h2><div class="thread-actions"><button id="newThread" class="new-thread" type="button" title="Start a new conversation"><span class="control-icon">+</span><span>New</span></button><button id="manageThreads" class="manage-threads" type="button" title="Remove conversations"><span class="control-icon"><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg></span><span>Clear</span></button></div></div><div class="thread-row"><select id="threadSelect" aria-label="Conversation" title="Open an existing conversation"><option>Loading conversations...</option></select></div></section>
+        <section class="rail-tools" aria-labelledby="milestoneLabel"><h2 id="milestoneLabel" class="rail-heading">Master milestones</h2><ol id="milestones" class="milestones"></ol></section>
+        <div class="header-actions"><button id="clear" class="clear" type="button">Clear conversation</button><button id="refresh" class="icon" type="button" title="Refresh" aria-label="Refresh"><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/></svg></button></div>
+      </header>
+      <div class="conversation-bar"><div class="conversation-bar-inner"><span>CODEX MESSAGES</span><strong id="activeThreadName">Loading conversation...</strong><div class="conversation-ident"><span id="activeThreadId" class="session-id">No shared session</span><button id="copyResumeCommand" class="copy-session" type="button" title="Copy exact WSL resume command" aria-label="Copy exact WSL resume command"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg></button><a class="phone-connect" href="/connect" title="Connect phone" aria-label="Connect phone"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="20" x="5" y="2" rx="2"/><path d="M12 18h.01"/></svg></a></div><div id="workStatus" class="work-status" data-kind="working" role="status" aria-live="polite"><span class="pulse"></span><span id="workText">Connecting to Codex...</span></div></div></div>
+      <main><div id="conversation" class="empty">Connecting to the local relay...</div></main>
+      <section id="approvalPanel" class="approval-panel" hidden><div class="approval-summary"><div class="approval-mark">✓</div><div class="approval-copy"><h2 id="approvalTitle">Latest Codex result</h2><p id="approvalText"></p></div><div class="approval-state">Awaiting approval</div></div><div class="approval-actions"><button type="button" data-command="CONTINUE" class="primary">Approve and continue</button><button type="button" data-command="REVIEW">Request review</button><button type="button" data-command="STOP" class="danger">Stop current run</button></div></section>
+      <form id="composer" class="composer">
+        <textarea id="message" aria-label="Message" placeholder="Write a message"></textarea>
+        <div class="actions"><button type="submit" class="primary">Send</button></div>
+      </form>
+      <dialog id="clearDialog"><div class="dialog-body"><h2>Clear conversation</h2><p>This removes visible messages and progress. Command audit records are preserved.</p></div><div class="dialog-actions"><button id="cancelClear" type="button">Cancel</button><button id="confirmClear" class="confirm" type="button">Clear all</button></div></dialog>
+      <dialog id="newThreadDialog"><form id="newThreadForm"><div class="dialog-body"><h2>New conversation</h2><label>Conversation name<input id="newThreadName" name="name" maxlength="80" autocomplete="off" required></label></div><div class="dialog-actions"><button id="cancelNewThread" type="button">Cancel</button><button type="submit" class="primary">Create</button></div></form></dialog>
+      <dialog id="manageThreadsDialog"><div class="dialog-body"><h2>Remove conversation</h2><label>Past conversation<select id="deleteThreadSelect"></select></label><p id="deleteThreadStatus" class="dialog-status" role="status"></p></div><div class="dialog-actions"><button id="cancelManageThreads" type="button">Cancel</button><button id="confirmDeleteThread" class="confirm" type="button">Remove</button></div></dialog>
+    </div>
+    <script>
+      const state = { optimistic: [], busy: false, activity: [], threadId: '', milestones: [] };
+      const el = {};
+      document.addEventListener('DOMContentLoaded', function () {
+        ['connection','workStatus','workText','activeThreadName','activeThreadId','copyResumeCommand','conversation','approvalPanel','approvalTitle','approvalText','composer','message','refresh','clear','clearDialog','cancelClear','confirmClear','threadSelect','newThread','newThreadDialog','newThreadForm','newThreadName','cancelNewThread','manageThreads','manageThreadsDialog','deleteThreadSelect','deleteThreadStatus','cancelManageThreads','confirmDeleteThread','milestones'].forEach(function (id) { el[id] = document.getElementById(id); });
+        el.composer.addEventListener('submit', function (event) { event.preventDefault(); send('MESSAGE'); });
+        el.message.addEventListener('keydown', function (event) {
+          if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+          event.preventDefault();
+          el.composer.requestSubmit();
+        });
+        document.querySelectorAll('[data-command]').forEach(function (button) { button.addEventListener('click', function () { send(button.dataset.command); }); });
+        el.refresh.addEventListener('click', refreshWorkbench);
+        el.clear.addEventListener('click', function () { el.clearDialog.showModal(); });
+        el.cancelClear.addEventListener('click', function () { el.clearDialog.close(); });
+        el.confirmClear.addEventListener('click', clearAll);
+        el.threadSelect.addEventListener('change', switchThread);
+        el.newThread.addEventListener('click', function(){el.newThreadName.value='';el.newThreadDialog.showModal();el.newThreadName.focus();});
+        el.cancelNewThread.addEventListener('click', function(){el.newThreadDialog.close();});
+        el.newThreadForm.addEventListener('submit', function(event){event.preventDefault();newThread();});
+        el.manageThreads.addEventListener('click', openThreadManager);
+        el.cancelManageThreads.addEventListener('click', function(){el.manageThreadsDialog.close();});
+        el.confirmDeleteThread.addEventListener('click', deleteThread);
+        el.copyResumeCommand.addEventListener('click', copyResumeCommand);
+        restoreStatus();
+        initializeWorkbench();
+        setInterval(load, 3000);
+      });
+      async function initializeWorkbench(){await load();await loadThreads();}
+      async function api(url, options) { const response = await fetch(url, options); const body = await response.json(); if (!response.ok) throw new Error(body.error || 'Request failed.'); return body; }
+      async function load() {
+        try {
+          const result = await api('/api/state');
+          state.activity = result.activity || [];
+          state.threadId = result.threadId || '';
+          state.milestones = result.milestones || [];
+          el.connection.className = 'connection online'; el.connection.lastElementChild.textContent = 'Online';
+          const messages = (result.activity || []).filter(function (event) { return event.event_type === 'MESSAGE'; });
+          state.optimistic = state.optimistic.filter(function (item) { return !item.commandId || !messages.some(function (event) { return event.command_id === item.commandId; }); });
+          render(state.activity);
+          renderMilestones();
+        } catch (error) { el.connection.className = 'connection offline'; el.connection.lastElementChild.textContent = 'Offline'; showStatus(error.message,'error'); }
+      }
+      async function loadThreads(){try{const result=await api('/api/threads');const threads=result.threads||[];el.threadSelect.textContent='';if(state.threadId&&!threads.some(function(thread){return thread.id===state.threadId;})){addThreadOption({id:state.threadId,name:'Current workbench conversation'});}threads.forEach(addThreadOption);if(!el.threadSelect.options.length){const option=document.createElement('option');option.textContent='No saved conversations';el.threadSelect.appendChild(option);}const active=threads.find(function(thread){return thread.id===state.threadId;});el.activeThreadName.textContent=active?threadLabel(active):'No conversation selected';el.activeThreadId.textContent=state.threadId?'SHARED SESSION · '+state.threadId:'No shared session';el.copyResumeCommand.disabled=!state.threadId;}catch(error){showStatus(error.message,'error');}}
+      function addThreadOption(thread){const option=document.createElement('option');option.value=thread.id;option.textContent=threadLabel(thread);option.title=thread.id;option.selected=thread.id===state.threadId;el.threadSelect.appendChild(option);}
+      function threadLabel(thread){if(thread.name)return thread.name.slice(0,55);let preview=String(thread.preview||'').trim();const wrapped=preview.match(/Command type:\s*[^.]+\.\s*([\s\S]*?)\s*Follow repository instructions/i);if(wrapped)preview=wrapped[1].trim();return(preview||'Untitled conversation').replace(/\s+/g,' ').slice(0,55);}
+      async function switchThread(){const threadId=el.threadSelect.value;if(!threadId||threadId===state.threadId)return;showStatus('Opening the selected conversation context...','working');setBusy(true);try{const result=await api('/api/threads/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({threadId:threadId})});state.threadId=result.thread.id;await loadThreads();showStatus('Working conversation is ready.','success',2600);}catch(error){showStatus(error.message,'error');await loadThreads();}finally{setBusy(false);}}
+      async function newThread(){const name=el.newThreadName.value.trim();if(!name)return;el.newThreadDialog.close();showStatus('Creating “'+name+'”...','working');setBusy(true);try{const result=await api('/api/threads/new',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name})});state.threadId=result.thread.id;await loadThreads();showStatus('Conversation “'+name+'” is ready.','success',2800);}catch(error){showStatus(error.message,'error');}finally{setBusy(false);}}
+      async function openThreadManager(){showStatus('Loading conversations...','working');try{const result=await api('/api/threads');const threads=result.threads||[];el.deleteThreadSelect.textContent='';el.deleteThreadStatus.textContent='';threads.forEach(function(thread){const option=document.createElement('option');option.value=thread.id;option.textContent=threadLabel(thread)+(thread.id===state.threadId?' (current)':'');el.deleteThreadSelect.appendChild(option);});el.confirmDeleteThread.disabled=!threads.length;if(!threads.length){const option=document.createElement('option');option.textContent='No conversations';el.deleteThreadSelect.appendChild(option);}el.manageThreadsDialog.showModal();showStatus('Choose a conversation to remove.','success');}catch(error){showStatus(error.message,'error');}}
+      async function deleteThread(){const threadId=el.deleteThreadSelect.value;if(!threadId)return;const name=el.deleteThreadSelect.options[el.deleteThreadSelect.selectedIndex].textContent.replace(/ \(current\)$/,'');showStatus('Removing “'+name+'”...','working');el.confirmDeleteThread.disabled=true;el.cancelManageThreads.disabled=true;el.confirmDeleteThread.textContent='Removing...';el.deleteThreadStatus.textContent='Removing the selected conversation from Codex...';try{await api('/api/threads/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({threadId:threadId})});el.deleteThreadStatus.textContent='Conversation removed.';await load();await loadThreads();showStatus('Conversation “'+name+'” was removed.','success');setTimeout(function(){el.manageThreadsDialog.close();},350);}catch(error){el.deleteThreadStatus.textContent=error.message;showStatus(error.message,'error');el.confirmDeleteThread.disabled=false;}finally{el.cancelManageThreads.disabled=false;el.confirmDeleteThread.textContent='Remove';}}
+      function renderMilestones(){el.milestones.textContent='';state.milestones.forEach(function(milestone){const item=document.createElement('li');item.className='milestone '+(milestone.status||'');const dot=document.createElement('span');dot.className='milestone-dot';const copy=document.createElement('span');copy.className='milestone-copy';const title=document.createElement('strong');title.textContent=milestone.title;const date=document.createElement('span');date.textContent=milestone.date||'';copy.append(title,date);item.append(dot,copy);el.milestones.appendChild(item);});}
+      function render(activity) {
+        const scroller=el.conversation;const keepAtBottom=scroller.scrollHeight-scroller.scrollTop-scroller.clientHeight<120;
+        const terminal = {}; let active = null;
+        activity.forEach(function (event) { if (['RESULT','ERROR','STOPPED'].includes(event.event_type)) terminal[event.command_id] = true; if (!active && ['WORKING','PROGRESS'].includes(event.event_type) && !terminal[event.command_id]) active = event; });
+        if(active){state.agentActive=true;showStatus(active.summary||'Codex is working...','working');}else if(state.agentActive){state.agentActive=false;showStatus('Codex finished the command.','success');}else if(!state.noticeActive)showStatus('Workbench ready.','success');
+        const events = activity.filter(function (event) { return ['MESSAGE','RESULT','ERROR','STOPPED'].includes(event.event_type); }).slice().sort(function(a,b){return Date.parse(a.created_at)-Date.parse(b.created_at);});
+        const latestResult=events.slice().reverse().find(function(event){return event.event_type==='RESULT';});el.approvalPanel.hidden=!latestResult;if(latestResult){el.approvalTitle.textContent='Latest Codex result';el.approvalText.textContent=[latestResult.summary,latestResult.details].filter(Boolean).join(' ').replace(/\s+/g,' ').slice(0,220);}
+        el.conversation.textContent = ''; el.conversation.className = '';
+        if (!events.length && !state.optimistic.length) { el.conversation.className = 'empty'; el.conversation.textContent = 'Start a conversation with Codex.'; return; }
+        events.forEach(addEvent); state.optimistic.forEach(function (item) { addBubble('You', item.message, 'user', 'Sending'); });
+        if(keepAtBottom)requestAnimationFrame(function(){scroller.scrollTop=scroller.scrollHeight;});
+      }
+      function addEvent(event) { const actor = event.event_type === 'MESSAGE' ? 'You' : event.event_type === 'RESULT' ? 'Codex' : event.event_type; addBubble(actor, [event.summary,event.details].filter(Boolean).join('\n'), event.event_type === 'MESSAGE' ? 'user' : event.event_type === 'ERROR' ? 'error' : '', formatTime(event.created_at)); }
+      function addBubble(actor, text, className, time) { const item=document.createElement('article'); item.className='message '+className; const meta=document.createElement('div'); meta.className='meta'; const name=document.createElement('span'); name.textContent=actor; const stamp=document.createElement('span'); stamp.textContent=time; meta.append(name,stamp); const body=document.createElement('div'); body.className='body'; appendFormattedText(body,text); item.append(meta,body); el.conversation.appendChild(item); }
+      function appendFormattedText(target,text) { String(text||'').split(/(\*\*[^*]+\*\*)/g).forEach(function(part){ if(part.startsWith('**')&&part.endsWith('**')){const strong=document.createElement('strong');strong.textContent=part.slice(2,-2);target.appendChild(strong);}else{target.appendChild(document.createTextNode(part));} }); }
+      async function send(commandType) {
+        if (state.busy) return;const defaults={CONTINUE:'Approved. Continue with the planned implementation.',REVIEW:'Review the current work and report findings before any further implementation.',STOP:'Stop the current run.'};const typedMessage=el.message.value.trim();const message=typedMessage||defaults[commandType]||'';if(commandType==='MESSAGE'&&!message)return;
+        let optimistic=null; if(message){el.message.value='';optimistic={message:message,commandId:''};state.optimistic.push(optimistic);render(state.activity);}
+        setBusy(true);showStatus(commandType==='MESSAGE'?'Sending your message to Codex...':'Sending '+commandType.toLowerCase()+' command to Codex...','working');
+        try { const result=await api('/api/commands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({commandType:commandType,message:message,idempotencyKey:crypto.randomUUID()})}); if(optimistic)optimistic.commandId=result.commandId;showStatus('Codex received the command and is starting...','working');await load(); }
+        catch(error){if(optimistic)state.optimistic=state.optimistic.filter(function(item){return item!==optimistic;});if(message&&!el.message.value)el.message.value=message;showStatus(error.message,'error');}
+        finally{setBusy(false);}
+      }
+      async function clearAll(){el.clearDialog.close();showStatus('Clearing visible conversation history...','working');try{await api('/api/activity/clear',{method:'POST'});state.optimistic=[];await load();showStatus('Visible conversation history was cleared.','success',2600);}catch(error){showStatus(error.message,'error');}}
+      async function refreshWorkbench(){showStatus('Refreshing messages and conversation state...','working');try{await Promise.all([load(),loadThreads()]);showStatus('Workbench is up to date.','success',1800);}catch(error){showStatus(error.message,'error');}}
+      async function copyResumeCommand(){if(!state.threadId)return;const command='~/.codex/packages/standalone/current/codex resume --remote ws://127.0.0.1:47823 -C /mnt/c/Development/VennuSign '+state.threadId;try{await navigator.clipboard.writeText(command);showStatus('Exact WSL resume command copied for this shared session.','success');}catch{showStatus('Clipboard access was blocked. Session: '+state.threadId,'error');}}
+      function showStatus(message,kind){clearTimeout(state.noticeTimer);state.noticeActive=true;el.workStatus.hidden=false;el.workStatus.dataset.kind=kind||'working';el.workText.textContent=message;try{localStorage.setItem('vennusign-workbench-status',JSON.stringify({message:message,kind:kind||'working'}));}catch{}}
+      function restoreStatus(){try{const saved=JSON.parse(localStorage.getItem('vennusign-workbench-status')||'null');if(saved&&saved.message){showStatus(saved.message,saved.kind);return;}}catch{}showStatus('Workbench ready.','success');}
+      function setBusy(value){state.busy=value;document.querySelectorAll('button, select').forEach(function(control){control.disabled=value;});}
+      function formatTime(value){const parsed=Date.parse(value);return Number.isFinite(parsed)?new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit'}).format(new Date(parsed)):'';}
+    </script>
+  </body>
+</html>

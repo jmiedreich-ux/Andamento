@@ -1,0 +1,352 @@
+<!doctype html>
+<html>
+  <head>
+    <base target="_top">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Arial, sans-serif;
+        font-size: 14px;
+        color: #202124;
+        background: #f4f6f8;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; }
+      button, textarea { font: inherit; }
+      button:focus-visible, textarea:focus-visible {
+        outline: 2px solid #1a73e8;
+        outline-offset: 2px;
+      }
+      .app { width: min(1120px, 100%); min-height: 100vh; margin: 0 auto; background: #fff; border-left: 1px solid #e3e7eb; border-right: 1px solid #e3e7eb; }
+      header {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 8px 16px;
+        min-height: 72px;
+        padding: 14px 22px;
+        background: rgba(255, 255, 255, 0.96);
+        border-bottom: 1px solid #dadce0;
+      }
+      h1 { margin: 0; font-size: 20px; line-height: 1.25; letter-spacing: 0; }
+      h2 { margin: 0 0 12px; font-size: 14px; letter-spacing: 0; }
+      .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+      .section-heading h2 { margin: 0; }
+      .status { display: flex; align-items: center; gap: 7px; color: #5f6368; font-size: 12px; }
+      .dot { width: 9px; height: 9px; border-radius: 50%; background: #9aa0a6; }
+      .status.online .dot { background: #188038; }
+      .status.offline .dot { background: #d93025; }
+      .work-status { grid-column: 1 / -1; display: flex; align-items: center; gap: 9px; min-height: 34px; padding: 7px 10px; border: 1px solid #d2e3fc; border-radius: 6px; background: #f8fafd; color: #174ea6; font-size: 12px; }
+      .work-status[hidden] { display: none; }
+      .work-indicator { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: #1a73e8; animation: pulse 1.4s ease-in-out infinite; }
+      @keyframes pulse { 50% { opacity: 0.35; } }
+      main { padding: 20px 22px 132px; }
+      .responses { min-height: 240px; }
+      .empty { color: #80868b; padding: 72px 0; text-align: center; }
+      .event { max-width: 76%; padding: 12px 14px; margin: 12px 0; border-radius: 7px; background: #f1f3f4; box-shadow: 0 1px 2px rgba(60, 64, 67, 0.08); }
+      .event:first-child { border-top: 0; }
+      .event.user { margin-left: auto; background: #e6f4ea; }
+      .event.error { border-left: 3px solid #d93025; background: #fce8e6; }
+      .event-meta { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; color: #6f7478; font-size: 11px; font-weight: 600; }
+      .event-text { line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+      .composer {
+        position: fixed;
+        left: 50%;
+        bottom: 0;
+        transform: translateX(-50%);
+        width: min(1120px, 100%);
+        padding: 14px 22px 18px;
+        background: #fff;
+        border-top: 1px solid #dadce0;
+      }
+      textarea {
+        display: block;
+        width: 100%;
+        min-height: 74px;
+        max-height: 180px;
+        resize: vertical;
+        border: 1px solid #bdc1c6;
+        border-radius: 6px;
+        padding: 10px 11px;
+        color: #202124;
+        background: #fff;
+        line-height: 1.4;
+      }
+      .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 9px; }
+      button {
+        min-height: 36px;
+        border: 1px solid #dadce0;
+        border-radius: 4px;
+        padding: 7px 12px;
+        background: #fff;
+        color: #1a73e8;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button:hover:not(:disabled) { background: #f8fafd; border-color: #aecbfa; }
+      button.primary { margin-left: auto; color: #fff; background: #1a73e8; border-color: #1a73e8; }
+      button.primary:hover:not(:disabled) { background: #1765cc; }
+      button.danger { color: #b3261e; }
+      button:disabled { opacity: 0.55; cursor: default; }
+      .feedback { min-height: 17px; margin-top: 7px; color: #5f6368; font-size: 12px; }
+      .feedback.error { color: #b3261e; }
+      .feedback.success { color: #137333; }
+      .refresh { width: 36px; min-width: 36px; padding: 0; font-size: 19px; line-height: 1; }
+      .header-actions { display: flex; align-items: center; gap: 8px; }
+      .clear-history { min-width: 58px; padding: 6px 10px; color: #5f6368; line-height: 1; }
+      dialog { width: min(420px, calc(100% - 32px)); border: 0; border-radius: 8px; padding: 0; color: #202124; box-shadow: 0 8px 28px rgba(60, 64, 67, 0.3); }
+      dialog::backdrop { background: rgba(32, 33, 36, 0.45); }
+      .dialog-body { padding: 22px 22px 14px; }
+      .dialog-body h2 { margin: 0 0 10px; font-size: 18px; }
+      .dialog-body p { margin: 0; color: #5f6368; line-height: 1.45; }
+      .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 22px 18px; }
+      .dialog-actions .confirm { color: #fff; background: #b3261e; border-color: #b3261e; }
+      @media (max-width: 520px) {
+        header, main, .composer { padding-left: 12px; padding-right: 12px; }
+        .actions button { flex: 1 1 auto; }
+        button.primary { margin-left: 0; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <header>
+        <div>
+          <h1>VennuSign Workbench</h1>
+          <div id="relayStatus" class="status"><span class="dot"></span><span>Loading</span></div>
+        </div>
+        <div class="header-actions">
+          <button id="clearHistory" class="clear-history" type="button" title="Clear conversation">Clear</button>
+          <button id="refresh" class="refresh" type="button" title="Refresh" aria-label="Refresh">&#8635;</button>
+        </div>
+        <div id="workStatus" class="work-status" hidden><span class="work-indicator"></span><span id="workStatusText">Codex is working...</span></div>
+      </header>
+
+      <main>
+        <section class="responses" aria-live="polite">
+          <div id="events" class="empty">Loading...</div>
+        </section>
+      </main>
+
+      <form id="composer" class="composer">
+        <label for="message" hidden>Message</label>
+        <textarea id="message" placeholder="Write a message"></textarea>
+        <div class="actions">
+          <button type="button" data-command="CONTINUE">Approve and continue</button>
+          <button type="button" data-command="REVIEW">Request review</button>
+          <button type="button" data-command="STOP" class="danger">Stop</button>
+          <button type="submit" class="primary">Send</button>
+        </div>
+        <div id="feedback" class="feedback" role="status" aria-live="polite"></div>
+      </form>
+
+      <dialog id="clearDialog" aria-labelledby="clearDialogTitle">
+        <div class="dialog-body">
+          <h2 id="clearDialogTitle">Clear response history</h2>
+          <p>This removes all responses and progress updates from this view. Command records are preserved.</p>
+        </div>
+        <div class="dialog-actions">
+          <button id="cancelClear" type="button">Cancel</button>
+          <button id="confirmClear" class="confirm" type="button">Clear all</button>
+        </div>
+      </dialog>
+    </div>
+
+    <script>
+      const state = { busy: false, optimisticMessages: [] };
+      const elements = {};
+
+      document.addEventListener('DOMContentLoaded', function () {
+        ['relayStatus', 'workStatus', 'workStatusText', 'refresh', 'clearHistory', 'clearDialog', 'cancelClear', 'confirmClear',
+          'events', 'composer', 'message', 'feedback'].forEach(function (id) {
+          elements[id] = document.getElementById(id);
+        });
+        elements.refresh.addEventListener('click', loadState);
+        elements.clearHistory.addEventListener('click', function () { elements.clearDialog.showModal(); });
+        elements.cancelClear.addEventListener('click', function () { elements.clearDialog.close(); });
+        elements.confirmClear.addEventListener('click', clearHistory);
+        elements.composer.addEventListener('submit', function (event) {
+          event.preventDefault();
+          send('MESSAGE');
+        });
+        document.querySelectorAll('[data-command]').forEach(function (button) {
+          button.addEventListener('click', function () { send(button.dataset.command); });
+        });
+        loadState();
+        window.setInterval(loadState, 5000);
+      });
+
+      function loadState() {
+        google.script.run
+          .withSuccessHandler(renderState)
+          .withFailureHandler(showError)
+          .getWebAppState();
+      }
+
+      function clearHistory() {
+        elements.clearDialog.close();
+        setBusy(true);
+        google.script.run
+          .withSuccessHandler(function (result) {
+            setBusy(false);
+            setFeedback(result.cleared + ' response' + (result.cleared === 1 ? '' : 's') + ' cleared.', 'success');
+            loadState();
+          })
+          .withFailureHandler(function (error) { setBusy(false); showError(error); })
+          .clearActivityHistory();
+      }
+
+      function renderState(result) {
+        renderRelay(result.relay || {});
+        const activity = result.activity || [];
+        const persistedMessages = activity.filter(function (event) { return event.event_type === 'MESSAGE'; });
+        state.optimisticMessages = state.optimisticMessages.filter(function (optimistic) {
+          return !optimistic.commandId || !persistedMessages.some(function (event) { return event.command_id === optimistic.commandId; });
+        });
+        renderWorkStatus(activity);
+        renderEvents(activity, state.optimisticMessages);
+      }
+
+      function send(commandType) {
+        if (state.busy) return;
+        const message = elements.message.value.trim();
+        if (commandType === 'MESSAGE' && !message) {
+          setFeedback('Enter a message.', 'error');
+          return;
+        }
+        let optimistic = null;
+        if (message) {
+          elements.message.value = '';
+          optimistic = { message: message, createdAt: new Date().toISOString(), commandId: '' };
+          state.optimisticMessages.push(optimistic);
+          renderStatePreservingRelay();
+        }
+        setBusy(true);
+        setFeedback('Queueing...', '');
+        google.script.run
+          .withSuccessHandler(function (result) {
+            setBusy(false);
+            if (optimistic) optimistic.commandId = result.commandId;
+            setFeedback('', '');
+            loadState();
+          })
+          .withFailureHandler(function (error) {
+            setBusy(false);
+            if (optimistic) state.optimisticMessages = state.optimisticMessages.filter(function (item) { return item !== optimistic; });
+            if (message && !elements.message.value) elements.message.value = message;
+            showError(error);
+          })
+          .enqueueCommand({
+            commandType: commandType,
+            message: message,
+            idempotencyKey: createIdempotencyKey(),
+          });
+      }
+
+      function renderRelay(relay) {
+        const status = elements.relayStatus;
+        status.className = 'status';
+        if (relay.online) {
+          status.classList.add('online');
+          status.lastElementChild.textContent = 'Online';
+        } else if (relay.enabled) {
+          status.classList.add('offline');
+          status.lastElementChild.textContent = 'Offline';
+        } else {
+          status.lastElementChild.textContent = 'Not connected';
+        }
+      }
+
+      function renderEvents(events, optimisticMessages) {
+        events = events.filter(function (event) {
+          return ['MESSAGE', 'RESULT', 'ERROR', 'STOPPED'].indexOf(event.event_type) >= 0;
+        }).slice().reverse();
+        elements.events.textContent = '';
+        elements.events.className = '';
+        if (!events.length && !(optimisticMessages || []).length) {
+          elements.events.className = 'empty';
+          elements.events.textContent = 'No responses yet.';
+          return;
+        }
+        events.forEach(function (event) {
+          const item = document.createElement('article');
+          item.className = 'event' + (event.event_type === 'MESSAGE' ? ' user' : '') + (event.event_type === 'ERROR' ? ' error' : '');
+          const meta = document.createElement('div');
+          meta.className = 'event-meta';
+          const type = document.createElement('span');
+          type.textContent = event.event_type === 'MESSAGE' ? 'You' : event.event_type === 'RESULT' ? 'Codex' : (event.event_type || 'Status');
+          const time = document.createElement('span');
+          time.textContent = formatTimestamp(event.created_at);
+          meta.append(type, time);
+          const text = document.createElement('div');
+          text.className = 'event-text';
+          text.textContent = [event.summary, event.details].filter(Boolean).join('\n');
+          item.append(meta, text);
+          elements.events.appendChild(item);
+        });
+        (optimisticMessages || []).forEach(function (optimistic) { appendOptimisticMessage(optimistic.message); });
+      }
+
+      function renderWorkStatus(events) {
+        const terminal = {};
+        let active = null;
+        events.forEach(function (event) {
+          if (['RESULT', 'ERROR', 'STOPPED'].indexOf(event.event_type) >= 0) terminal[event.command_id] = true;
+          if (!active && ['WORKING', 'PROGRESS'].indexOf(event.event_type) >= 0 && !terminal[event.command_id]) active = event;
+        });
+        elements.workStatus.hidden = !active;
+        if (active) elements.workStatusText.textContent = active.summary || 'Codex is working...';
+      }
+
+      function appendOptimisticMessage(message) {
+        if (elements.events.classList.contains('empty')) elements.events.textContent = '';
+        elements.events.className = '';
+        const item = document.createElement('article');
+        item.className = 'event user';
+        const meta = document.createElement('div');
+        meta.className = 'event-meta';
+        meta.textContent = 'You - sending';
+        const text = document.createElement('div');
+        text.className = 'event-text';
+        text.textContent = message;
+        item.append(meta, text);
+        elements.events.appendChild(item);
+      }
+
+      function renderStatePreservingRelay() {
+        appendOptimisticMessage(state.optimisticMessages[state.optimisticMessages.length - 1].message);
+      }
+
+      function setBusy(busy) {
+        state.busy = busy;
+        document.querySelectorAll('button').forEach(function (button) { button.disabled = busy; });
+      }
+
+      function setFeedback(message, type) {
+        elements.feedback.textContent = message;
+        elements.feedback.className = 'feedback' + (type ? ' ' + type : '');
+      }
+
+      function showError(error) {
+        setFeedback(error && error.message ? error.message : String(error), 'error');
+      }
+
+      function createIdempotencyKey() {
+        if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
+        return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2) + '-' + Math.random().toString(36).slice(2);
+      }
+
+      function formatTimestamp(value) {
+        const parsed = Date.parse(value);
+        if (!Number.isFinite(parsed)) return value || '';
+        return new Intl.DateTimeFormat(undefined, {
+          month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
+        }).format(new Date(parsed));
+      }
+    </script>
+  </body>
+</html>

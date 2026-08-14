@@ -1,0 +1,322 @@
+<!doctype html>
+<html>
+  <head>
+    <base target="_top">
+    <meta charset="utf-8">
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Arial, sans-serif;
+        font-size: 13px;
+        color: #202124;
+        background: #ffffff;
+      }
+
+      * { box-sizing: border-box; }
+      body { margin: 0; }
+      button, select, textarea { font: inherit; }
+      button:focus-visible, select:focus-visible, textarea:focus-visible {
+        outline: 2px solid #1a73e8;
+        outline-offset: 2px;
+      }
+
+      .shell { padding: 14px 12px 20px; }
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding-bottom: 12px;
+        border-bottom: 1px solid #dadce0;
+      }
+      h1 { margin: 0; font-size: 17px; line-height: 1.25; letter-spacing: 0; }
+      h2 { margin: 0 0 9px; font-size: 13px; line-height: 1.3; letter-spacing: 0; }
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+        font-size: 12px;
+        color: #5f6368;
+      }
+      .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #9aa0a6; flex: 0 0 auto; }
+      .status.online .status-dot { background: #188038; }
+      .status.offline .status-dot { background: #d93025; }
+
+      section { padding: 14px 0; border-bottom: 1px solid #e8eaed; }
+      label { display: block; margin: 0 0 5px; color: #3c4043; font-weight: 600; }
+      select, textarea {
+        display: block;
+        width: 100%;
+        border: 1px solid #bdc1c6;
+        border-radius: 4px;
+        background: #fff;
+        color: #202124;
+      }
+      select { height: 34px; padding: 0 28px 0 9px; }
+      textarea { min-height: 84px; resize: vertical; padding: 8px 9px; line-height: 1.4; }
+      .field + .field { margin-top: 10px; }
+
+      .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 11px; }
+      button {
+        min-height: 34px;
+        border: 1px solid #dadce0;
+        border-radius: 4px;
+        padding: 7px 10px;
+        background: #fff;
+        color: #1a73e8;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button:hover:not(:disabled) { background: #f8fafd; border-color: #aecbfa; }
+      button.primary { background: #1a73e8; color: #fff; border-color: #1a73e8; }
+      button.primary:hover:not(:disabled) { background: #1765cc; }
+      button.danger { color: #b3261e; }
+      button.full { grid-column: 1 / -1; }
+      button:disabled { cursor: default; opacity: 0.55; }
+      .icon-button { width: 34px; min-width: 34px; padding: 0; font-size: 18px; line-height: 1; }
+
+      .feedback { min-height: 18px; margin-top: 9px; font-size: 12px; line-height: 1.4; color: #5f6368; }
+      .feedback.error { color: #b3261e; }
+      .feedback.success { color: #137333; }
+
+      .activity-list { margin: 0; padding: 0; list-style: none; }
+      .activity-item { padding: 9px 0; border-top: 1px solid #f1f3f4; }
+      .activity-item:first-child { border-top: 0; padding-top: 0; }
+      .activity-meta { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 3px; color: #5f6368; font-size: 11px; }
+      .activity-summary { line-height: 1.35; overflow-wrap: anywhere; }
+      .empty { color: #5f6368; font-size: 12px; }
+      .loading { padding: 24px 0; text-align: center; color: #5f6368; }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <div class="topbar">
+        <div>
+          <h1>VennuSign Workbench</h1>
+          <div id="relayStatus" class="status"><span class="status-dot"></span><span>Loading</span></div>
+        </div>
+        <button id="refreshButton" class="icon-button" type="button" title="Refresh" aria-label="Refresh">&#8635;</button>
+      </div>
+
+      <div id="loading" class="loading">Loading workbook state...</div>
+
+      <div id="content" hidden>
+        <section>
+          <h2>Planning record</h2>
+          <div class="field">
+            <label for="sourceTab">Tab</label>
+            <select id="sourceTab"></select>
+          </div>
+          <div class="field">
+            <label for="sourceRecord">Record</label>
+            <select id="sourceRecord"></select>
+          </div>
+        </section>
+
+        <section>
+          <h2>Command</h2>
+          <label for="message">Follow-up</label>
+          <textarea id="message" placeholder="Write a follow-up for the selected record"></textarea>
+          <div class="actions">
+            <button id="continueButton" class="primary full" type="button">Approve and continue</button>
+            <button id="messageButton" type="button">Send follow-up</button>
+            <button id="reviewButton" type="button">Request review</button>
+            <button id="stopButton" class="danger full" type="button">Stop work</button>
+          </div>
+          <div id="feedback" class="feedback" role="status" aria-live="polite"></div>
+        </section>
+
+        <section>
+          <h2>Recent activity</h2>
+          <ul id="activityList" class="activity-list"></ul>
+        </section>
+      </div>
+    </main>
+
+    <script>
+      const elements = {};
+      let busy = false;
+      let initialRecordId = '';
+
+      document.addEventListener('DOMContentLoaded', function () {
+        ['relayStatus', 'refreshButton', 'loading', 'content', 'sourceTab', 'sourceRecord',
+          'message', 'continueButton', 'messageButton', 'reviewButton', 'stopButton',
+          'feedback', 'activityList'].forEach(function (id) {
+          elements[id] = document.getElementById(id);
+        });
+
+        elements.refreshButton.addEventListener('click', loadState);
+        elements.sourceTab.addEventListener('change', function () { loadRecords(''); });
+        elements.continueButton.addEventListener('click', function () { sendCommand('CONTINUE'); });
+        elements.messageButton.addEventListener('click', function () { sendCommand('MESSAGE'); });
+        elements.reviewButton.addEventListener('click', function () { sendCommand('REVIEW'); });
+        elements.stopButton.addEventListener('click', function () { sendCommand('STOP'); });
+
+        loadState();
+        window.setInterval(loadActivity, 30000);
+      });
+
+      function loadState() {
+        setFeedback('', '');
+        google.script.run
+          .withSuccessHandler(renderState)
+          .withFailureHandler(handleFailure)
+          .getSidebarState();
+      }
+
+      function renderState(state) {
+        elements.loading.hidden = true;
+        elements.content.hidden = false;
+        renderRelay(state.relay);
+        renderOptions(elements.sourceTab, state.sourceTabs.map(function (name) {
+          return { value: name, label: name };
+        }), state.activeTab);
+        initialRecordId = state.activeRecordId || '';
+        renderActivity(state.activity || []);
+        loadRecords(initialRecordId);
+      }
+
+      function loadRecords(selectedId) {
+        const sheetName = elements.sourceTab.value;
+        elements.sourceRecord.disabled = true;
+        google.script.run
+          .withSuccessHandler(function (records) {
+            renderOptions(elements.sourceRecord, records.map(function (record) {
+              return { value: record.id, label: record.id + ' - ' + record.label };
+            }), selectedId);
+            elements.sourceRecord.disabled = false;
+          })
+          .withFailureHandler(handleFailure)
+          .getSourceRecords(sheetName);
+      }
+
+      function sendCommand(commandType) {
+        if (busy) return;
+        const sourceId = elements.sourceRecord.value;
+        if (!sourceId) {
+          setFeedback('Select a planning record.', 'error');
+          return;
+        }
+        if (commandType === 'MESSAGE' && !elements.message.value.trim()) {
+          setFeedback('Enter a follow-up message.', 'error');
+          return;
+        }
+
+        const idempotencyKey = createIdempotencyKey();
+        setBusy(true);
+        setFeedback('Queueing command...', '');
+        google.script.run
+          .withSuccessHandler(function (result) {
+            setBusy(false);
+            if (commandType === 'MESSAGE') elements.message.value = '';
+            const suffix = result.duplicate ? ' already exists.' : ' queued.';
+            setFeedback(result.commandId + suffix, 'success');
+          })
+          .withFailureHandler(function (error) {
+            setBusy(false);
+            handleFailure(error);
+          })
+          .enqueueCommand({
+            sourceTab: elements.sourceTab.value,
+            sourceId: sourceId,
+            commandType: commandType,
+            message: elements.message.value,
+            idempotencyKey: idempotencyKey,
+          });
+      }
+
+      function loadActivity() {
+        google.script.run
+          .withSuccessHandler(renderActivity)
+          .withFailureHandler(function () {})
+          .getRecentActivity(15);
+      }
+
+      function renderRelay(relay) {
+        const status = elements.relayStatus;
+        status.classList.remove('online', 'offline');
+        if (relay.online) {
+          status.classList.add('online');
+          status.querySelector('span:last-child').textContent = 'Relay online';
+        } else if (relay.enabled) {
+          status.classList.add('offline');
+          status.querySelector('span:last-child').textContent = 'Relay offline';
+        } else {
+          status.querySelector('span:last-child').textContent = 'Relay disabled';
+        }
+      }
+
+      function renderActivity(events) {
+        elements.activityList.textContent = '';
+        if (!events || !events.length) {
+          const item = document.createElement('li');
+          item.className = 'empty';
+          item.textContent = 'No relay activity yet.';
+          elements.activityList.appendChild(item);
+          return;
+        }
+
+        events.forEach(function (event) {
+          const item = document.createElement('li');
+          item.className = 'activity-item';
+          const meta = document.createElement('div');
+          meta.className = 'activity-meta';
+          const type = document.createElement('span');
+          type.textContent = event.event_type || 'STATUS';
+          const time = document.createElement('span');
+          time.textContent = formatTimestamp(event.created_at);
+          meta.append(type, time);
+          const summary = document.createElement('div');
+          summary.className = 'activity-summary';
+          summary.textContent = event.summary || event.details || '';
+          item.append(meta, summary);
+          elements.activityList.appendChild(item);
+        });
+      }
+
+      function renderOptions(select, options, selectedValue) {
+        select.textContent = '';
+        options.forEach(function (option) {
+          const node = document.createElement('option');
+          node.value = option.value;
+          node.textContent = option.label;
+          node.selected = option.value === selectedValue;
+          select.appendChild(node);
+        });
+      }
+
+      function createIdempotencyKey() {
+        if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+          return window.crypto.randomUUID();
+        }
+        return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2) + '-' + Math.random().toString(36).slice(2);
+      }
+
+      function formatTimestamp(value) {
+        const parsed = Date.parse(value);
+        if (!Number.isFinite(parsed)) return value || '';
+        return new Intl.DateTimeFormat(undefined, {
+          month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
+        }).format(new Date(parsed));
+      }
+
+      function setBusy(nextBusy) {
+        busy = nextBusy;
+        [elements.continueButton, elements.messageButton, elements.reviewButton,
+          elements.stopButton, elements.sourceTab, elements.sourceRecord]
+          .forEach(function (element) { element.disabled = nextBusy; });
+      }
+
+      function setFeedback(message, type) {
+        elements.feedback.textContent = message;
+        elements.feedback.className = 'feedback' + (type ? ' ' + type : '');
+      }
+
+      function handleFailure(error) {
+        elements.loading.hidden = true;
+        setFeedback(error && error.message ? error.message : String(error), 'error');
+      }
+    </script>
+  </body>
+</html>
