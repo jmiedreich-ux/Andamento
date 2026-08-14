@@ -8,7 +8,7 @@
 - **Visual direction:** The approved first surface uses an independent light architectural tracing-table world centered on a visible lineage spine. VennuSign, Google Sheets, and earlier workbench visuals remain historical anti-references.
 - **System of record direction:** Local SQLite in WAL mode, accessed through a local application service.
 - **Existing prototype:** Google Sheets, Apps Script, and the Codex relay remain behavioral and integration evidence only. They are neither the intended authoritative backend nor visual design inputs for the new product.
-- **Repository state:** Initialized on `main` with private GitHub remote `https://github.com/jmiedreich-ux/Andamento`. The one-time repository bootstrap is administrative setup and does not authorize feature implementation.
+- **Repository state:** Private GitHub repository `https://github.com/jmiedreich-ux/Andamento`; the owner-requested WIP takeover checkpoint is published as draft PR [#1](https://github.com/jmiedreich-ux/Andamento/pull/1) from `feature/planning-loop-m1`.
 - **Implementation state:** Planning Loop Milestone 1 (`AND-N1-PLANNING-LOOP-v1`) is a work-in-progress takeover checkpoint on `feature/planning-loop-m1`. The backend authority remediation is implemented, but the latest browser recovery work is incomplete and the branch is not ready for review or acceptance.
 - **Verification state:** On the exact takeover worktree, implementation verification passed 53/53. Playwright stopped with 1 passed, 1 failed, and 6 not run at `empty-validation-refusal`. The earlier Impeccable PASS predates the current UI delta and is no longer an exact-state gate. Independent review and owner acceptance remain pending.
 - **CI state:** Not configured.

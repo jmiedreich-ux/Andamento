@@ -6,6 +6,7 @@ Updated 2026-08-14 for an explicit owner-requested GitHub takeover checkpoint.
 
 - The approved product, authority model, Milestone 1 scope, and design authority remain unchanged. `AGENTS.md`, `docs/features/planning-loop/feature.md`, and `docs/design/approved/planning-loop/milestone-1.md` are authoritative.
 - The active branch is `feature/planning-loop-m1`, based on local commit `5ac35d0` (`Harden planning loop authority boundaries`).
+- The owner-requested takeover checkpoint is published at draft PR [#1](https://github.com/jmiedreich-ux/Andamento/pull/1). The validated WIP code checkpoint is commit `ed779d8`; the PR targets remote `main` and intentionally includes the three earlier local commits that had not yet been published.
 - The current worktree contains a substantial uncommitted remediation delta across the browser application, Codex adapter, planning service, SQLite boundary, migration 004, and unit/integration/Playwright tests.
 - Backend remediation now includes four ordered migrations, sixteen executable persisted-state invariants, collision-safe imported participant identity, stronger planning-point and package lineage immutability, loopback request hardening, Codex cancellation/quarantine lifecycle handling, and package boundary validation.
 - On the exact takeover worktree, `npm test` passed **53/53** on 2026-08-14. Syntax checks for the changed JavaScript modules, JSON parsing, `git diff --check`, and a credential-pattern scan also passed.

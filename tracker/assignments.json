@@ -12,5 +12,5 @@
     "sharedFilesOwnedBy": "unassigned; the next coordinating agent must claim before editing"
   },
   "status": "TAKEOVER_REQUIRED",
-  "notes": "Owner requested a GitHub handoff checkpoint. Exact worktree backend tests pass 53/53; Playwright stopped at 1 passed, 1 failed, 6 not run. Browser pending-draft/bootstrap recovery is incomplete. This branch is not review-ready or acceptance-ready."
+  "notes": "Owner requested a GitHub handoff checkpoint, published as draft PR #1 from feature/planning-loop-m1. WIP code checkpoint ed779d8 passes backend tests 53/53; Playwright stopped at 1 passed, 1 failed, 6 not run. Browser pending-draft/bootstrap recovery is incomplete. This branch is not review-ready or acceptance-ready."
 }
