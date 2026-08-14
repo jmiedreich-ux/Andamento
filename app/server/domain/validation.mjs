@@ -55,7 +55,7 @@ export function packageContent(input) {
   }
   return {
     outcome: optionalText(input.outcome, 'Outcome', { max: 4000 }),
-    includedScope: stringList(input.includedScope ?? [], 'Included scope', { maxItems: 100, maxItemLength: 1200 }),
+    includedScope: stringList(input.includedScope ?? [], 'Included scope', { maxItems: 100, maxItemLength: 2000 }),
     exclusions: stringList(input.exclusions ?? [], 'Exclusions', { maxItems: 100, maxItemLength: 1200 }),
     acceptanceCriteria: stringList(input.acceptanceCriteria ?? [], 'Acceptance criteria', { maxItems: 100, maxItemLength: 1200 }),
     reviewRequirements: stringList(input.reviewRequirements ?? [], 'Review requirements', { maxItems: 50, maxItemLength: 1200 }),

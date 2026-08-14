@@ -79,15 +79,61 @@ export async function openDatabase(databasePath, { busyTimeoutMs = 5000 } = {}) 
       ON CONFLICT(participant_key) DO NOTHING
     `).run(owner.id, owner.participantKey, owner.kind, owner.displayName, owner.provider, owner.model, utcNow());
 
-    database.prepare(`
-      UPDATE agent_runs
-      SET status = 'INTERRUPTED',
-          error_code = 'SERVICE_RESTARTED',
-          error_message = 'The local service restarted before this contribution completed. Retry is available.',
-          completed_at = ?,
-          row_version = row_version + 1
+    const selectInterruptedRuns = database.prepare(`
+      SELECT id, adapter FROM agent_runs
       WHERE status = 'RUNNING'
-    `).run(utcNow());
+         OR (
+           adapter = 'codex'
+           AND status = 'INTERRUPTED'
+           AND error_code = 'CODEX_CLEANUP_PENDING'
+         )
+      ORDER BY started_at, id
+    `);
+    database.exec('BEGIN IMMEDIATE;');
+    try {
+      const interruptedRuns = selectInterruptedRuns.all();
+      const completedAt = utcNow();
+      const updateRun = database.prepare(`
+        UPDATE agent_runs
+        SET status = 'INTERRUPTED', error_code = ?, error_message = ?,
+            completed_at = ?, row_version = row_version + 1
+        WHERE id = ?
+          AND (
+            status = 'RUNNING'
+            OR (
+              adapter = 'codex'
+              AND status = 'INTERRUPTED'
+              AND error_code = 'CODEX_CLEANUP_PENDING'
+            )
+          )
+      `);
+      const insertAudit = database.prepare(`
+        INSERT INTO audit_events(
+          id, event_type, resource_type, resource_id, actor_participant_id, details_json, occurred_at
+        ) VALUES (?, ?, 'AGENT_RUN', ?, NULL, ?, ?)
+      `);
+      for (const run of interruptedRuns) {
+        const cleanupUnconfirmed = run.adapter === 'codex';
+        const errorCode = cleanupUnconfirmed ? 'CODEX_CLEANUP_UNCONFIRMED' : 'SERVICE_RESTARTED';
+        const errorMessage = cleanupUnconfirmed
+          ? 'Andamento could not confirm that the Codex contribution stopped. Further Codex work in this planning room is blocked to prevent overlapping turns.'
+          : 'The local service restarted before this contribution completed. Retry is available.';
+        const update = updateRun.run(errorCode, errorMessage, completedAt, run.id);
+        if (Number(update.changes) === 1) {
+          insertAudit.run(
+            randomUUID(),
+            cleanupUnconfirmed ? 'AGENT_CLEANUP_UNCONFIRMED' : 'AGENT_RUN_INTERRUPTED',
+            run.id,
+            JSON.stringify({ reason: errorCode }),
+            completedAt,
+          );
+        }
+      }
+      database.exec('COMMIT;');
+    } catch (error) {
+      database.exec('ROLLBACK;');
+      throw error;
+    }
 
     return database;
   } catch (error) {

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { realpath, stat } from 'node:fs/promises';
 import { promisify } from 'node:util';
@@ -24,11 +24,16 @@ import {
 import { appendAudit, mutation, now, transaction } from './storage/database.mjs';
 
 const OWNER_ID = 'owner-local';
+const CODEX_CLEANUP_PENDING = 'CODEX_CLEANUP_PENDING';
+const CODEX_CLEANUP_UNCONFIRMED = 'CODEX_CLEANUP_UNCONFIRMED';
+const CODEX_PENDING_MESSAGE = 'Codex cancellation was requested and provider cleanup is still being confirmed. Further Codex work in this planning room is temporarily blocked.';
+const CODEX_BLOCKED_MESSAGE = 'Andamento could not confirm that the Codex contribution stopped. Further Codex work in this planning room is blocked to prevent overlapping turns.';
 const POINT_TYPES = ['QUESTION', 'DECISION', 'REQUIREMENT', 'CONSTRAINT', 'RISK', 'DEPENDENCY', 'ASSUMPTION', 'PROPOSED_WORK', 'PARKING_LOT'];
 const POINT_DECISIONS = ['ACCEPTED', 'REJECTED', 'DEFERRED'];
 const SAFE_AGENT_FAILURES = new Map([
   ['CANCELLED', 'The owner cancelled this contribution.'],
   ['CODEX_FAILURE', 'Codex could not complete this contribution. Retry is available.'],
+  [CODEX_CLEANUP_UNCONFIRMED, CODEX_BLOCKED_MESSAGE],
   ['CODEX_TIMEOUT', 'Codex exceeded the planning time limit and was interrupted. Retry is available.'],
   ['DETERMINISTIC_FAILURE', 'The planning participant could not complete this attempt. Retry is available.'],
   ['MALFORMED_CONTRIBUTION', 'The participant returned an unusable contribution.'],
@@ -36,8 +41,35 @@ const SAFE_AGENT_FAILURES = new Map([
 ]);
 const execFileAsync = promisify(execFile);
 
-function safeAgentFailure(error) {
+function identityPart(value) {
+  return String(value || '').toLowerCase();
+}
+
+function importedParticipantKey({ displayName, provider, model }) {
+  const identity = [provider, model, displayName].map(identityPart);
+  const digest = createHash('sha256').update(JSON.stringify(identity)).digest('hex');
+  return `imported:v2:${digest}`;
+}
+
+function legacyImportedParticipantKey({ displayName, provider, model }) {
+  return `imported:${identityPart(provider)}:${identityPart(model)}:${identityPart(displayName)}`;
+}
+
+function sameParticipantIdentity(existing, candidate) {
+  return existing.kind === candidate.kind
+    && identityPart(existing.displayName) === identityPart(candidate.displayName)
+    && identityPart(existing.provider) === identityPart(candidate.provider)
+    && identityPart(existing.model) === identityPart(candidate.model);
+}
+
+function safeAgentFailure(error, adapter) {
   const requestedCode = String(error?.code || '').toUpperCase();
+  if (requestedCode === CODEX_CLEANUP_UNCONFIRMED && adapter !== 'codex') {
+    return {
+      code: 'AGENT_FAILURE',
+      message: 'The planning participant could not complete this contribution. Retry is available.',
+    };
+  }
   if (SAFE_AGENT_FAILURES.has(requestedCode)) {
     return { code: requestedCode, message: SAFE_AGENT_FAILURES.get(requestedCode) };
   }
@@ -192,6 +224,7 @@ export class PlanningService {
     this.testMode = testMode;
     this.activeRuns = new Map();
     this.shuttingDown = false;
+    this.shutdownFinalized = false;
     this.shutdownPromise = null;
   }
 
@@ -310,10 +343,7 @@ export class PlanningService {
     }, () => {
       const storedParticipant = contributionType === 'OWNER'
         ? participant
-        : this.ensureParticipant({
-            participantKey: `imported:${participant.provider.toLowerCase()}:${participant.model.toLowerCase()}:${participant.displayName.toLowerCase()}`,
-            ...participant,
-          });
+        : this.ensureImportedParticipant(participant);
       const id = randomUUID();
       const createdAt = now();
       this.database.prepare(`
@@ -438,6 +468,7 @@ export class PlanningService {
         completion: null,
         discussionId: value.discussionId,
         adapter: value.adapter,
+        providerStarted: false,
         threadId: context.codexThreadId || '',
       };
       this.activeRuns.set(value.id, activeRun);
@@ -478,15 +509,27 @@ export class PlanningService {
       const run = this.requireRun(normalizedRunId);
       if (run.status !== 'RUNNING') return run;
       const completedAt = now();
+      const activeRun = this.activeRuns.get(normalizedRunId);
+      const codexCleanupPending = run.adapter === 'codex' && activeRun?.providerStarted === true;
+      const codexCleanupUnconfirmed = run.adapter === 'codex' && !activeRun;
+      const errorCode = codexCleanupPending
+        ? CODEX_CLEANUP_PENDING
+        : codexCleanupUnconfirmed ? CODEX_CLEANUP_UNCONFIRMED : 'CANCELLED';
+      const errorMessage = codexCleanupPending
+        ? CODEX_PENDING_MESSAGE
+        : codexCleanupUnconfirmed ? CODEX_BLOCKED_MESSAGE : 'The owner cancelled this contribution.';
       this.database.prepare(`
         UPDATE agent_runs
-        SET status = 'INTERRUPTED', error_code = 'CANCELLED',
-            error_message = 'The owner cancelled this contribution.', completed_at = ?, row_version = row_version + 1
+        SET status = 'INTERRUPTED', error_code = ?,
+            error_message = ?, completed_at = ?, row_version = row_version + 1
         WHERE id = ? AND status = 'RUNNING'
-      `).run(completedAt, normalizedRunId);
+      `).run(errorCode, errorMessage, codexCleanupPending ? null : completedAt, normalizedRunId);
       appendAudit(this.database, {
-        eventType: 'AGENT_RUN_CANCELLED', resourceType: 'AGENT_RUN', resourceId: normalizedRunId, actorId,
-        details: {},
+        eventType: codexCleanupPending
+          ? 'AGENT_CANCELLATION_REQUESTED'
+          : codexCleanupUnconfirmed ? 'AGENT_CLEANUP_UNCONFIRMED' : 'AGENT_RUN_CANCELLED',
+        resourceType: 'AGENT_RUN', resourceId: normalizedRunId, actorId,
+        details: { reason: errorCode },
       });
       return this.requireRun(normalizedRunId);
     });
@@ -505,6 +548,13 @@ export class PlanningService {
         error.code = 'REPOSITORY_UNAVAILABLE';
         throw error;
       }
+      if (controller.signal.aborted) {
+        const error = new Error('The contribution was cancelled before the provider started.');
+        error.code = 'CANCELLED';
+        throw error;
+      }
+      const activeRun = this.activeRuns.get(run.id);
+      if (activeRun) activeRun.providerStarted = true;
       const contribution = await adapter.contribute({
         prompt: run.prompt,
         repositoryRoot,
@@ -512,9 +562,9 @@ export class PlanningService {
         retryOfRunId: run.retryOfRunId || '',
         signal: controller.signal,
         onThread: async threadId => {
-          if (this.shuttingDown) return;
           const activeRun = this.activeRuns.get(run.id);
           if (activeRun) activeRun.threadId = threadId;
+          if (this.shutdownFinalized) return;
           transaction(this.database, () => {
             this.database.prepare(`
               UPDATE discussions SET codex_thread_id = ?, updated_at = ?, row_version = row_version + 1
@@ -523,9 +573,14 @@ export class PlanningService {
           });
         },
       });
-      if (this.shuttingDown) return;
+      if (this.shutdownFinalized) return;
       transaction(this.database, () => {
         const current = this.requireRun(run.id);
+        if (current.errorCode === CODEX_CLEANUP_PENDING && run.adapter === 'codex') {
+          this.confirmPendingCodexCleanup(run, now());
+          return;
+        }
+        if (this.shuttingDown) return;
         if (current.status !== 'RUNNING') return;
         const createdAt = now();
         const messageId = randomUUID();
@@ -545,20 +600,36 @@ export class PlanningService {
         });
       });
     } catch (error) {
-      if (this.shuttingDown) return;
-      const failure = safeAgentFailure(error);
+      const failure = safeAgentFailure(error, run.adapter);
+      const cleanupUnconfirmed = failure.code === CODEX_CLEANUP_UNCONFIRMED;
+      if (this.shutdownFinalized) return;
       transaction(this.database, () => {
         const current = this.requireRun(run.id);
-        if (current.status !== 'RUNNING') return;
+        const cleanupConfirmed = run.adapter === 'codex'
+          && failure.code === 'CANCELLED'
+          && current.errorCode === CODEX_CLEANUP_PENDING;
+        if (cleanupConfirmed) {
+          this.confirmPendingCodexCleanup(run, now());
+          return;
+        }
+        if (this.shuttingDown && !cleanupUnconfirmed) return;
+        if (
+          current.status !== 'RUNNING'
+          && !(cleanupUnconfirmed && current.status === 'INTERRUPTED')
+        ) return;
         const completedAt = now();
+        const status = this.shuttingDown || current.status === 'INTERRUPTED'
+          ? 'INTERRUPTED'
+          : 'FAILED';
         this.database.prepare(`
           UPDATE agent_runs
-          SET status = 'FAILED', error_code = ?, error_message = ?, completed_at = ?, row_version = row_version + 1
-          WHERE id = ? AND status = 'RUNNING'
-        `).run(failure.code, failure.message, completedAt, run.id);
+          SET status = ?, error_code = ?, error_message = ?, completed_at = ?, row_version = row_version + 1
+          WHERE id = ?
+        `).run(status, failure.code, failure.message, completedAt, run.id);
         this.touchDiscussion(run.discussionId, completedAt);
         appendAudit(this.database, {
-          eventType: 'AGENT_CONTRIBUTION_FAILED', resourceType: 'AGENT_RUN', resourceId: run.id,
+          eventType: cleanupUnconfirmed ? 'AGENT_CLEANUP_UNCONFIRMED' : 'AGENT_CONTRIBUTION_FAILED',
+          resourceType: 'AGENT_RUN', resourceId: run.id,
           actorId: run.participantId, details: { code: failure.code },
         });
       });
@@ -709,6 +780,14 @@ export class PlanningService {
         ORDER BY created_at, id
       `).all(normalizedDiscussionId);
       if (!acceptedPoints.length) throw validationError('Accept at least one planning point before preparing a package.');
+      const derivedContent = packageContent({
+        outcome: '',
+        includedScope: acceptedPoints.map(point => point.text),
+        exclusions: [],
+        acceptanceCriteria: [],
+        reviewRequirements: [],
+        evidenceRequirements: [],
+      });
       let workPackage = this.database.prepare(`
         SELECT id, discussion_id AS discussionId FROM work_packages WHERE discussion_id = ?
       `).get(normalizedDiscussionId);
@@ -729,14 +808,7 @@ export class PlanningService {
         workPackageId: workPackage.id,
         versionNumber: nextNumber,
         status: 'DRAFT',
-        content: {
-          outcome: '',
-          includedScope: acceptedPoints.map(point => point.text),
-          exclusions: [],
-          acceptanceCriteria: [],
-          reviewRequirements: [],
-          evidenceRequirements: [],
-        },
+        content: derivedContent,
         createdAt,
         updatedAt: createdAt,
         approvedAt: '',
@@ -919,6 +991,7 @@ export class PlanningService {
     const discussionRow = this.database.prepare(`
       SELECT d.id, d.project_id AS projectId, d.title, d.status, d.created_at AS createdAt,
              d.updated_at AS updatedAt, d.row_version AS rowVersion,
+             d.codex_thread_id AS codexThreadId,
              p.id AS projectRecordId, p.name AS projectName, p.repository_root AS repositoryRoot,
              p.created_at AS projectCreatedAt, p.row_version AS projectRowVersion
       FROM discussions d JOIN projects p ON p.id = d.project_id WHERE d.id = ?
@@ -989,7 +1062,21 @@ export class PlanningService {
       `).all(packageRow.id);
       workPackage = { ...packageRow, versions, currentVersion: versions[0] || null, approvals };
     }
-    return { project, discussion, messages, runs, points, workPackage };
+    const codexQuarantine = this.findCodexCleanupQuarantine({
+      discussionId: id,
+      threadId: discussionRow.codexThreadId,
+    });
+    const agentAvailability = {
+      codex: {
+        blocked: Boolean(codexQuarantine),
+        reason: codexQuarantine
+          ? codexQuarantine.errorCode === CODEX_CLEANUP_PENDING
+            ? CODEX_PENDING_MESSAGE
+            : CODEX_BLOCKED_MESSAGE
+          : '',
+      },
+    };
+    return { project, discussion, messages, runs, points, workPackage, agentAvailability };
   }
 
   verifyInvariants() {
@@ -1055,6 +1142,47 @@ export class PlanningService {
               )`,
       },
       {
+        name: 'planning point identity and text match their immutable snapshots',
+        sql: `SELECT pp.id FROM planning_points pp
+              LEFT JOIN planning_point_identity_snapshots snapshots
+                ON snapshots.planning_point_id = pp.id
+              WHERE snapshots.planning_point_id IS NULL
+                 OR snapshots.discussion_id IS NOT pp.discussion_id
+                 OR snapshots.source_message_id IS NOT pp.source_message_id
+                 OR snapshots.created_by_participant_id IS NOT pp.created_by_participant_id
+                 OR snapshots.point_type IS NOT pp.point_type
+                 OR snapshots.text IS NOT pp.text
+                 OR snapshots.supersedes_point_id IS NOT pp.supersedes_point_id
+                 OR snapshots.created_at IS NOT pp.created_at`,
+      },
+      {
+        name: 'planning point decisions match immutable owner-authority snapshots',
+        sql: `SELECT pp.id FROM planning_points pp
+              LEFT JOIN participants decided_by ON decided_by.id = pp.decided_by_participant_id
+              LEFT JOIN planning_point_decision_snapshots snapshots
+                ON snapshots.planning_point_id = pp.id
+              WHERE (
+                pp.disposition = 'PROPOSED'
+                AND (
+                  pp.decided_by_participant_id IS NOT NULL
+                  OR pp.decided_at IS NOT NULL
+                  OR snapshots.planning_point_id IS NOT NULL
+                )
+              ) OR (
+                pp.disposition <> 'PROPOSED'
+                AND (
+                  pp.decided_by_participant_id IS NULL
+                  OR pp.decided_at IS NULL
+                  OR length(trim(pp.decided_at)) = 0
+                  OR decided_by.kind IS NOT 'OWNER'
+                  OR snapshots.planning_point_id IS NULL
+                  OR snapshots.disposition IS NOT pp.disposition
+                  OR snapshots.decided_by_participant_id IS NOT pp.decided_by_participant_id
+                  OR snapshots.decided_at IS NOT pp.decided_at
+                )
+              )`,
+      },
+      {
         name: 'completed agent runs have one contribution',
         sql: `SELECT ar.id FROM agent_runs ar LEFT JOIN messages m ON m.agent_run_id = ar.id
               WHERE ar.status = 'COMPLETED' GROUP BY ar.id HAVING COUNT(m.id) <> 1`,
@@ -1062,6 +1190,26 @@ export class PlanningService {
       {
         name: 'non-completed runs have no contribution',
         sql: `SELECT ar.id FROM agent_runs ar JOIN messages m ON m.agent_run_id = ar.id WHERE ar.status <> 'COMPLETED'`,
+      },
+      {
+        name: 'unconfirmed Codex cleanup remains durably quarantined',
+        sql: `SELECT ar.id FROM agent_runs ar
+              WHERE ar.error_code = '${CODEX_CLEANUP_UNCONFIRMED}'
+                AND (
+                  ar.adapter <> 'codex'
+                  OR ar.status NOT IN ('FAILED', 'INTERRUPTED')
+                  OR ar.completed_at IS NULL
+                )`,
+      },
+      {
+        name: 'pending Codex cleanup remains incomplete and quarantined',
+        sql: `SELECT ar.id FROM agent_runs ar
+              WHERE ar.error_code = '${CODEX_CLEANUP_PENDING}'
+                AND (
+                  ar.adapter <> 'codex'
+                  OR ar.status <> 'INTERRUPTED'
+                  OR ar.completed_at IS NOT NULL
+                )`,
       },
       {
         name: 'retry sources have at most one child run',
@@ -1185,7 +1333,13 @@ export class PlanningService {
     const existing = this.database.prepare(`
       SELECT id, kind, display_name AS displayName, provider, model FROM participants WHERE participant_key = ?
     `).get(participantKey);
-    if (existing) return mapParticipant(existing);
+    if (existing) {
+      const participant = mapParticipant(existing);
+      if (!sameParticipantIdentity(participant, { kind, displayName, provider, model })) {
+        throw new AppError(500, 'INVARIANT_VIOLATION', 'A participant identity key resolved to different attribution metadata.');
+      }
+      return participant;
+    }
     const participant = { id: randomUUID(), kind, displayName, provider, model };
     this.database.prepare(`
       INSERT INTO participants(id, participant_key, kind, display_name, provider, model, created_at)
@@ -1194,13 +1348,67 @@ export class PlanningService {
     return participant;
   }
 
+  ensureImportedParticipant(identity) {
+    const participantKey = importedParticipantKey(identity);
+    const existingByKey = this.database.prepare(`
+      SELECT id, kind, display_name AS displayName, provider, model
+      FROM participants WHERE participant_key = ?
+    `).get(participantKey);
+    if (existingByKey) {
+      const participant = mapParticipant(existingByKey);
+      if (!sameParticipantIdentity(participant, identity)) {
+        throw new AppError(500, 'INVARIANT_VIOLATION', 'An imported participant identity key resolved to different attribution metadata.');
+      }
+      return participant;
+    }
+
+    const legacy = this.database.prepare(`
+      SELECT id, kind, display_name AS displayName, provider, model
+      FROM participants WHERE participant_key = ? AND kind = 'IMPORTED'
+    `).get(legacyImportedParticipantKey(identity));
+    if (legacy) {
+      const participant = mapParticipant(legacy);
+      if (sameParticipantIdentity(participant, identity)) return participant;
+      // Legacy delimiter collisions cannot be repaired retrospectively; a v2 key keeps new attribution exact.
+    }
+    return this.ensureParticipant({ participantKey, ...identity });
+  }
+
   touchDiscussion(id, timestamp) {
     this.database.prepare(`
       UPDATE discussions SET updated_at = ?, row_version = row_version + 1 WHERE id = ?
     `).run(timestamp, id);
   }
 
+  confirmPendingCodexCleanup(run, completedAt) {
+    const update = this.database.prepare(`
+      UPDATE agent_runs
+      SET status = 'INTERRUPTED', error_code = 'CANCELLED',
+          error_message = 'The owner cancelled this contribution.', completed_at = ?,
+          row_version = row_version + 1
+      WHERE id = ? AND adapter = 'codex' AND status = 'INTERRUPTED'
+        AND error_code = ?
+    `).run(completedAt, run.id, CODEX_CLEANUP_PENDING);
+    if (Number(update.changes) !== 1) return false;
+    this.touchDiscussion(run.discussionId, completedAt);
+    appendAudit(this.database, {
+      eventType: 'AGENT_CLEANUP_CONFIRMED',
+      resourceType: 'AGENT_RUN',
+      resourceId: run.id,
+      actorId: run.participantId,
+      details: { reason: 'CANCELLED' },
+    });
+    return true;
+  }
+
   assertCodexTurnAvailable({ discussionId, threadId }) {
+    const quarantinedRun = this.findCodexCleanupQuarantine({ discussionId, threadId });
+    if (quarantinedRun) {
+      if (quarantinedRun.errorCode === CODEX_CLEANUP_PENDING) {
+        throw conflict('Codex cancellation is still being confirmed. Wait for provider cleanup before starting another Codex turn.');
+      }
+      throw conflict('Andamento could not confirm that an earlier Codex turn stopped. Further Codex work in this planning room or shared Codex thread is blocked to prevent overlap.');
+    }
     const overlappingRun = [...this.activeRuns.values()].find(activeRun => (
       activeRun.adapter === 'codex'
       && (
@@ -1211,6 +1419,28 @@ export class PlanningService {
     if (overlappingRun) {
       throw conflict('Codex is still contributing in this planning room or shared Codex thread. Wait for it to finish before starting another Codex turn.');
     }
+  }
+
+  findCodexCleanupQuarantine({ discussionId, threadId }) {
+    const normalizedThreadId = threadId || '';
+    return this.database.prepare(`
+      SELECT prior_run.id, prior_run.error_code AS errorCode
+      FROM agent_runs prior_run
+      JOIN discussions prior_discussion ON prior_discussion.id = prior_run.discussion_id
+      WHERE prior_run.adapter = 'codex'
+        AND prior_run.error_code IN (?, ?)
+        AND (
+          prior_run.discussion_id = ?
+          OR (? <> '' AND prior_discussion.codex_thread_id = ?)
+        )
+      LIMIT 1
+    `).get(
+      CODEX_CLEANUP_PENDING,
+      CODEX_CLEANUP_UNCONFIRMED,
+      discussionId,
+      normalizedThreadId,
+      normalizedThreadId,
+    );
   }
 
   assertOwner(actorId) {
@@ -1244,7 +1474,10 @@ export class PlanningService {
     this.shutdownPromise = (async () => {
       for (const [, state] of active) state.controller.abort();
       if (active.length) {
-        const settled = Promise.allSettled(active.map(([, state]) => state.completion));
+        const pendingRunIds = new Set(active.map(([runId]) => runId));
+        const settled = Promise.allSettled(active.map(([runId, state]) => (
+          Promise.resolve(state.completion).finally(() => pendingRunIds.delete(runId))
+        )));
         let timeoutHandle;
         try {
           await Promise.race([
@@ -1256,25 +1489,39 @@ export class PlanningService {
         }
         const completedAt = now();
         transaction(this.database, () => {
-          for (const [runId] of active) {
-            const update = this.database.prepare(`
+          for (const [runId, state] of active) {
+            const cleanupUnconfirmed = state.adapter === 'codex'
+              && state.providerStarted === true
+              && pendingRunIds.has(runId);
+            const errorCode = cleanupUnconfirmed ? CODEX_CLEANUP_UNCONFIRMED : 'SERVICE_SHUTDOWN';
+            const errorMessage = cleanupUnconfirmed
+              ? SAFE_AGENT_FAILURES.get(CODEX_CLEANUP_UNCONFIRMED)
+              : 'The local service stopped before this contribution completed. Retry is available.';
+            const update = this.database.prepare(cleanupUnconfirmed ? `
               UPDATE agent_runs
-              SET status = 'INTERRUPTED', error_code = 'SERVICE_SHUTDOWN',
-                  error_message = 'The local service stopped before this contribution completed. Retry is available.',
+              SET status = 'INTERRUPTED', error_code = ?,
+                  error_message = ?,
+                  completed_at = ?, row_version = row_version + 1
+              WHERE id = ? AND status IN ('RUNNING', 'INTERRUPTED')
+            ` : `
+              UPDATE agent_runs
+              SET status = 'INTERRUPTED', error_code = ?,
+                  error_message = ?,
                   completed_at = ?, row_version = row_version + 1
               WHERE id = ? AND status = 'RUNNING'
-            `).run(completedAt, runId);
+            `).run(errorCode, errorMessage, completedAt, runId);
             if (Number(update.changes) === 1) {
               appendAudit(this.database, {
-                eventType: 'AGENT_RUN_INTERRUPTED',
+                eventType: cleanupUnconfirmed ? 'AGENT_CLEANUP_UNCONFIRMED' : 'AGENT_RUN_INTERRUPTED',
                 resourceType: 'AGENT_RUN',
                 resourceId: runId,
-                details: { reason: 'SERVICE_SHUTDOWN' },
+                details: { reason: errorCode },
               });
             }
           }
         });
       }
+      this.shutdownFinalized = true;
       this.activeRuns.clear();
     })();
     return this.shutdownPromise;

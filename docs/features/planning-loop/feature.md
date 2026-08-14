@@ -6,8 +6,8 @@
 - **Milestone:** 1 — Discussion to approved package
 - **Work package:** `AND-N1-PLANNING-LOOP-v1`
 - **Owner authorization:** Explicitly approved through the active `/goal` objective on 2026-08-14
-- **Execution state:** Implementation and UI QA complete on local branch `feature/planning-loop-m1`; ready for independent exact-head review
-- **Publication exception:** Local issue, branch, evidence, and review only. No GitHub issue, pull request, or push for Night 1.
+- **Execution state:** Work-in-progress takeover checkpoint on `feature/planning-loop-m1`; backend verification is green, but the latest browser recovery delta is incomplete and Playwright is failing
+- **Publication state:** The owner explicitly requested a GitHub branch and draft-PR handoff checkpoint on 2026-08-14. Publication grants no review approval, merge authority, or owner acceptance.
 
 ## Whole Behavior
 
@@ -95,19 +95,23 @@ No path may be reported as passing without the named command output. Anything th
 
 ## Evidence Commands
 
+### Evidence currency at takeover
+
+The current checkpoint supersedes the earlier completion claim. On the exact published worktree, `npm test` passes **53/53**, while `npm run test:e2e` stops with **1 passed, 1 failed, and 6 not run** at `empty-validation-refusal`. The latest UI work contains an incomplete pending-draft recovery seam. Earlier coverage, runtime, screenshots, and Impeccable verdicts below are historical evidence from a prior UI snapshot and do **not** satisfy the current exact-state gates. The Impeccable detector already ran once and must not be rerun.
+
 ### Implementation verification
 
 ```text
 npm test
 ```
 
-Result on 2026-08-14: **14 passed, 0 failed**. The suite exercises the real on-disk SQLite boundary, restart/WAL behavior, project isolation, attribution and lineage, idempotency, immutable history, authority denial, approval completeness, stale recovery, concurrent agents, retry/cancellation, provider-error sanitization, and validation.
+Result on the takeover worktree on 2026-08-14: **53 passed, 0 failed**. The suite exercises the real on-disk SQLite boundary, all four migrations, sixteen persisted-state invariants, restart/WAL behavior, project isolation, attribution and lineage, idempotency, immutable history, authority denial, approval completeness, concurrency, retry/cancellation, Codex cleanup quarantine, provider-error sanitization, and validation.
 
 ```text
 npm run test:coverage
 ```
 
-Result: **14 passed, 0 failed**. Coverage was 95.67% lines for `planning-service.mjs`, 100% for validation, 95.16% for the database boundary, and 75.48% across all loaded server files. The live Codex protocol is intentionally supported by a smoke rather than simulated line coverage.
+Current exact-checkpoint result: **UNTESTED**. The earlier coverage result belonged to a prior implementation snapshot and must be rerun after the browser recovery work is complete.
 
 ```text
 npm audit --audit-level=high
@@ -131,7 +135,7 @@ node.exe --test --test-name-pattern "denies non-owner decisions" app/test/integr
 npm run test:e2e
 ```
 
-Result after the final accessibility and intrinsic-SVG regressions: **8 passed, 0 failed, 0 skipped**, one worker, 22.4 seconds of Playwright time. The suite uses the real browser, local HTTP service, and per-test on-disk SQLite files. It covers the complete loop, empty/loading/refusal, partial and malformed provider results, cancellation/retry, restart persistence, idempotency and immutability, stale two-actor merge, simultaneous distinct-key retry deduplication, delayed-save navigation safety, unavailable capability/repository recovery, long and more-than-fit content, keyboard operation, exact compact-action names and icon sizes, 1024×768 and 1920×1080 support, 1000-pixel compact mode, and a 320×800 400%-zoom equivalent with no page-level horizontal overflow.
+Exact takeover result: **1 passed, 1 failed, 6 did not run**. `empty-validation-refusal` failed after bootstrap retry because the page rendered the existing-project registration surface with a retained `Failed to fetch` alert instead of the expected first-run surface. The full UI QA gate is therefore **FAILED** until the next agent repairs the bootstrap/recovery behavior and reruns all eight specifications.
 
 The Impeccable detector ran exactly once:
 
@@ -141,7 +145,7 @@ node.exe .agents/skills/impeccable/scripts/detect.mjs --json app/public
 
 It returned one `side-tab` warning for the amber edge on `.capability-note`. Review classified this as a contextual false positive: the element is a functional Codex-unavailable status/refusal strip with explicit text, status semantics, and a retry action, not a decorative card accent. The detector was not rerun. The bounded critique is stored at `.impeccable/critique/2026-08-14T11-04-15Z__app-public-index-html.md`; final evidence screenshots are `.impeccable/screenshots/final-1920.png` and `.impeccable/screenshots/final-1024.png`.
 
-The fresh Impeccable finish review returned **PASS** with no unresolved P0 or P1 findings. It confirmed closure of the original lineage, zoom/reflow, and approval-checkpoint findings plus the compact accessible-name and direct-SVG sizing multiplier. Two optional P2 refinements remain proposed rather than silently widened into Milestone 1: align the tabbed breakpoint with the full approved 1024–1439 range, and further enlarge the smallest lineage/metadata text while improving sighted discoverability of compact Capture actions.
+That Impeccable finish review applied to the earlier UI snapshot. The current UI delta requires a new bounded finish review after freeze; the existing detector result may be reused and the detector must not run again.
 
 ### Runtime and integration
 
@@ -151,9 +155,9 @@ curl.exe http://127.0.0.1:47831/api/health
 curl.exe http://127.0.0.1:47831/api/invariants
 ```
 
-The final service answered `status: ok`, reported SQLite storage, and passed all nine persisted-state invariants. Response inspection also confirmed the local-only CSP, frame denial, no-referrer policy, MIME sniffing protection, and no-store caching.
+Historical only: the earlier service answered `status: ok`. At takeover publication the Andamento service is not running on port `47831`; exact-checkpoint runtime and all sixteen invariants remain to be demonstrated after the UI is repaired.
 
-A final live Codex smoke against the same application code completed run `885fe8d4-cde7-4037-a96e-bb428105de44` with status `COMPLETED`, provider `openai`, and model `codex-local`. It returned an attributed planning recommendation and the database passed all nine invariants afterward.
+Historical only: a prior live Codex smoke completed successfully, but the Codex adapter changed afterward. A current exact-checkpoint live smoke is **UNTESTED**.
 
 ### Behavior-surface search
 
@@ -173,6 +177,8 @@ Complete relevant result set: both ordered migrations; browser application and s
 ## Owner Acceptance Workbook
 
 Target time: 5–10 minutes. Start the service with `npm start`, then open `http://127.0.0.1:47831`.
+
+Do not present this workbook until the full Playwright, bounded Impeccable, runtime, and independent-review gates pass on one frozen commit.
 
 1. Register a project using any local Git repository and create a planning room. Confirm the first-run guidance disappears into a focused working surface.
 2. Add an owner note, import one attributed Claude or other-agent response, and ask Codex if the local bridge is available. Confirm each voice remains visibly attributed; if Codex is unavailable, confirm import and owner work remain usable.

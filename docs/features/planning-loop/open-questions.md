@@ -2,7 +2,7 @@
 
 ## Blocking
 
-None for Milestone 1. The owner delegated Night 1 implementation and stack decisions through the active goal after approving the bounded planning-loop outcome.
+No new owner product decision blocks takeover. Implementation and validation are incomplete, however: pending-input recovery across navigation and full reload must be finished under the existing recovery requirements before Milestone 1 can return to review.
 
 ## Deliberately Deferred
 

@@ -1,55 +1,46 @@
 # Andamento Session Handoff
 
-Updated 2026-08-14 at the Planning Loop Milestone 1 implementation and UI-QA checkpoint.
+Updated 2026-08-14 for an explicit owner-requested GitHub takeover checkpoint.
 
 ## Established
 
-- The owner explicitly approved **Andamento** as the product name on 2026-08-14. The name refers to the visual flow and direction created by arranging individual pieces in a mosaic.
-- The product is a project-neutral, local-first development operations system rather than a VennuSign-specific Google Sheets relay.
-- The human owner performs planning, PSA direction, explicit work approval, review, and final acceptance.
-- AI agents may discuss, recommend, challenge, implement approved work, and review, but may not grant themselves authority.
-- Multi-provider discussion must support OpenAI, Anthropic, Codex, and future adapters without making a provider response format part of the domain model.
-- Discussion produces individually traceable proposed planning points. Owner-accepted points can become inputs to a versioned work package.
-- SQLite in WAL mode is the intended system of record; the UI and agents access it only through the local application service.
-- The VennuSign feature/milestone process has been adapted into `AGENTS.md` as the governing development policy.
-- The workspace is initialized on `main` and connected to the private GitHub repository `https://github.com/jmiedreich-ux/Andamento`.
-- Repository bootstrap is administrative setup only; no feature design, milestone, or application implementation was approved by creating it.
-- The owner requires Andamento to be visually distinct from VennuSign, Google Sheets, and earlier workbench prototypes. Prior UI work is behavioral, accessibility, and integration evidence only; visual reuse requires explicit owner approval in an Andamento-specific design authority.
-- Routine brainstorming and local documentation work do not need continuous GitHub interaction. GitHub is used when the owner explicitly requests it or at an agreed publication or review checkpoint.
-- UI-bearing milestones require complete Playwright end-to-end coverage written with the implementation and bounded Impeccable critique and audit against the approved design authority.
-- A UI milestone has four separate gates: implementation verification, Impeccable and Playwright UI QA, independent implementation review, and owner acceptance. Independent review does not replace or satisfy QA.
-- Impeccable 4.0.4 is available project-locally at `.agents/skills/impeccable/`; `PRODUCT.md`, the approved feature authority, the implemented `DESIGN.md`, critique evidence, and the approved north-star comp govern the first surface.
-- The owner's active `/goal` objective explicitly authorizes the bounded Night 1 Planning Loop implementation without a GitHub issue, pull request, or push.
-- `PRODUCT.md` now records durable product truth and the owner-delegated Night 1 stack.
-- Planning Loop Milestone 1 is controlled by `docs/features/planning-loop/feature.md`, `docs/features/planning-loop/open-questions.md`, and the approved design authority at `docs/design/approved/planning-loop/milestone-1.md`.
-- The approved north-star comp is `.impeccable/mocks/planning-room-lineage-spine.png`; it uses an architectural tracing-table world with discussion, lineage, owner decisions, and package approval visible together.
-- The dependency-light Night 1 application uses Node.js 24 ESM, the Node HTTP server, built-in `node:sqlite`, standards-based HTML/CSS/JavaScript, and Playwright. It binds to `127.0.0.1:47831` and stores production state in ignored `var/andamento.db`.
-- Ordered migrations establish SQLite WAL mode, foreign keys, a busy timeout, relationship indexes, append-only approval/audit/receipt records, approved-version immutability, optimistic concurrency, provider-neutral attribution, project isolation, and one retry child per failed run.
-- Implementation verification passes 14/14 and all nine persisted-state invariants. Playwright passes 8/8 against the real UI, service, browser, and on-disk SQLite, including restart, concurrency, idempotency, authority, 320-pixel zoom-equivalent reflow, and delayed-save navigation safety.
-- The bounded Impeccable finish review returned PASS with no unresolved P0/P1 findings. The one detector warning is a contextual false positive on a functional capability-status strip; the detector ran exactly once.
-- A live Codex adapter smoke completed through the local App Server with preserved OpenAI/Codex attribution. Imported Claude contributions and deterministic participant paths are also tested.
+- The approved product, authority model, Milestone 1 scope, and design authority remain unchanged. `AGENTS.md`, `docs/features/planning-loop/feature.md`, and `docs/design/approved/planning-loop/milestone-1.md` are authoritative.
+- The active branch is `feature/planning-loop-m1`, based on local commit `5ac35d0` (`Harden planning loop authority boundaries`).
+- The current worktree contains a substantial uncommitted remediation delta across the browser application, Codex adapter, planning service, SQLite boundary, migration 004, and unit/integration/Playwright tests.
+- Backend remediation now includes four ordered migrations, sixteen executable persisted-state invariants, collision-safe imported participant identity, stronger planning-point and package lineage immutability, loopback request hardening, Codex cancellation/quarantine lifecycle handling, and package boundary validation.
+- On the exact takeover worktree, `npm test` passed **53/53** on 2026-08-14. Syntax checks for the changed JavaScript modules, JSON parsing, `git diff --check`, and a credential-pattern scan also passed.
+- The exact takeover worktree is **not UI-gate clean**. `npm run test:e2e` stopped with **1 passed, 1 failed, 6 did not run**. `empty-validation-refusal` expected the first-run heading after bootstrap retry but received the existing-project registration surface with a retained `Failed to fetch` alert.
+- The latest browser edit is intentionally incomplete. `app/public/app.mjs` contains new bootstrap/detail request sequencing and the beginnings of route-scoped pending-draft recovery (`pendingDraftRecoveries` and `consumePendingDraftRecoveries`), but the recovery records are not yet wired into mutation call sites or route restoration.
+- The most recent prior Impeccable PASS and screenshots predate the current UI delta and therefore do not approve this checkpoint. The Impeccable detector already ran exactly once and must **not** be rerun; use a bounded critique/finish review after the UI is frozen.
+- The local Andamento service is not running on port `47831`. The external Codex App Server bridge was still listening on `127.0.0.1:47823` at handoff inspection.
+- The owner explicitly superseded the earlier no-push exception and requested this GitHub handoff so another agent can continue.
+
+## Known Incomplete Work
+
+1. Finish or deliberately replace the pending-input recovery model. At minimum, message, capture, replacement, package-save, and room-creation payloads must survive leave/return after an unconfirmed request without crossing project or discussion boundaries, and retries must reuse the exact request-bound idempotency key.
+2. Correct the failing bootstrap retry browser path and add overlapping/stale bootstrap response coverage. A stale bootstrap failure must not replace a newer healthy route.
+3. Complete the stale explicit-refresh error regression: an older failed detail request must not display an alert after navigation or after a newer successful read.
+4. Reconcile package saves whose response is lost but whose exact content is already durable; do not create a false concurrent-edit conflict.
+5. Decide and document recovery across a full page reload or process interruption. The new in-memory recovery draft is insufficient for that path; it needs a durable service record or an explicitly approved browser-storage policy. This remains **UNTESTED**, not accepted as deferred scope.
+6. Rerun the complete Playwright suite after the UI behavior is frozen, then obtain an exact-delta Impeccable finish review and fresh independent implementation/security review.
 
 ## Assumed
 
-- The initial product is local-first and primarily single-owner, while its domain model preserves participant attribution.
-- The existing Codex App Server client is eligible for bounded protocol reuse behind a provider-neutral adapter. Relay service code, Google integration, state files, and UI are not implementation bases.
+- The product remains local-first and single-owner for Milestone 1 while preserving participant/provider/source attribution.
+- Live Anthropic integration remains unavailable without credentials; imported attributed contributions and deterministic adapters remain the supported Milestone 1 paths.
 
 ## Deliberately Deferred
 
-- Live Anthropic integration until credentials and model choice are supplied; imported attributed contributions and deterministic test participants cover the Night 1 workflow.
-- CI and branch protection.
-- Final logo, tagline, domain selection, external font or brand assets, and trademark clearance beyond the approved name and implemented first-surface visual system.
-- GitHub, Google Sheets, and multi-machine synchronization.
-- Organization-wide roles and permissions.
-- Unbounded autonomous agent-to-agent conversations.
+- Repository execution, autonomous multi-agent rounds, remote sync, organization roles, CI/branch protection, and mobile product support remain outside Milestone 1.
+- CI is **NOT CONFIGURED**. Local validation remains authoritative.
 
 ## Current Control State
 
-- Planning Loop Milestone 1 is approved, claimed by `root`, and ready for independent exact-head review on `feature/planning-loop-m1`.
-- `AND-N1-PLANNING-LOOP-v1` is the only authorized implementation package.
-- Controlled files and shared contracts remain owned by the coordinating agent; specialist agents are read-only unless assigned a non-overlapping file set.
-- GitHub publication is explicitly excluded tonight.
+- Work package `AND-N1-PLANNING-LOOP-v1` remains the only authorized implementation scope.
+- Status is **TAKEOVER_REQUIRED / WORK IN PROGRESS**, not `READY_FOR_INDEPENDENT_REVIEW` or `READY_FOR_OWNER_ACCEPTANCE`.
+- The published branch and draft pull request are a recovery checkpoint. They must not be merged until the complete local gates and fresh exact-head review pass.
+- No agent currently owns the shared files. The next coordinating agent must claim the assignment in `tracker/assignments.json` before editing.
 
 ## Exact Next Action
 
-Create the bounded local milestone commit and obtain an independent exact-head implementation review. If approved, synchronize the controlled records and leave the running build `READY_FOR_OWNER_ACCEPTANCE` for the owner workbook.
+Claim `feature/planning-loop-m1`, inspect the failing Playwright trace and the incomplete pending-draft recovery code in `app/public/app.mjs`, then finish one route-scoped recovery model and make `empty-validation-refusal` plus the focused refresh/navigation/concurrency specifications pass before rerunning the full gate.

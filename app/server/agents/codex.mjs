@@ -18,6 +18,41 @@ function contributionTimeoutError() {
   return error;
 }
 
+function cleanupUnconfirmedError() {
+  const error = new Error('Codex could not confirm that the planning turn stopped.');
+  error.code = 'CODEX_CLEANUP_UNCONFIRMED';
+  return error;
+}
+
+function requestRefusedError() {
+  const error = new Error('The local Codex bridge refused a planning request.');
+  error.code = 'CODEX_REQUEST_REFUSED';
+  return error;
+}
+
+function requestNotSentError() {
+  const error = new Error('The local Codex bridge could not receive a planning request.');
+  error.code = 'CODEX_REQUEST_NOT_SENT';
+  return error;
+}
+
+function isDefinitelyNotAccepted(error) {
+  return error?.code === 'CODEX_REQUEST_REFUSED' || error?.code === 'CODEX_REQUEST_NOT_SENT';
+}
+
+function isInterruptAcknowledgement(value) {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && Object.keys(value).length === 0,
+  );
+}
+
+function isTerminalTurn(turn) {
+  return ['completed', 'interrupted', 'failed'].includes(turn?.status);
+}
+
 function throwIfAborted(signal) {
   if (signal?.aborted) throw abortedError();
 }
@@ -68,7 +103,7 @@ export async function probeWebSocket(url, { timeoutMs = 900 } = {}) {
   });
 }
 
-class AppServerConnection {
+export class AppServerConnection {
   constructor(url, signal) {
     this.url = url;
     this.signal = signal;
@@ -154,8 +189,8 @@ class AppServerConnection {
       signal?.addEventListener('abort', onAbort, { once: true });
       try {
         this.send({ id, method, params });
-      } catch (error) {
-        settle(reject, error);
+      } catch {
+        settle(reject, requestNotSentError());
       }
     });
   }
@@ -167,7 +202,7 @@ class AppServerConnection {
       const pending = this.pending.get(message.id);
       if (!pending) return;
       this.pending.delete(message.id);
-      if (message.error) pending.reject(new Error('The local Codex bridge refused a planning request.'));
+      if (message.error) pending.reject(requestRefusedError());
       else pending.resolve(message.result);
       return;
     }
@@ -216,8 +251,14 @@ export class CodexPlanningAgent {
     let activeThreadId = threadId;
     let activeTurnId = '';
     let turnTerminal = false;
+    let turnStartIssued = false;
+    let turnStart;
     let contributionTimeoutId;
     let removeListener = () => {};
+    let resolveTerminalConfirmation;
+    const terminalConfirmation = new Promise(resolve => {
+      resolveTerminalConfirmation = resolve;
+    });
     try {
       throwIfAborted(signal);
       await waitWithAbort(connection.open(), signal);
@@ -267,31 +308,16 @@ export class CodexPlanningAgent {
         resolveCompletion = resolve;
         rejectCompletion = reject;
       });
-      let resolveTurnIdentity;
-      const turnIdentity = new Promise(resolve => {
-        resolveTurnIdentity = resolve;
-      });
+      completion.catch(() => {});
       const contributionDeadline = new Promise((_, reject) => {
         contributionTimeoutId = setTimeout(
           () => reject(contributionTimeoutError()),
           this.contributionTimeoutMs,
         );
       });
-      let turnStartIssued = false;
+      // `turn/started` has no JSON-RPC request id, so only the correlated
+      // `turn/start` response is allowed to establish this contribution's turn.
       removeListener = connection.onMessage(message => {
-        if (message.method === 'turn/started') {
-          const { threadId: notificationThreadId, turn } = message.params || {};
-          if (
-            !turnStartIssued
-            || notificationThreadId !== activeThreadId
-            || typeof turn?.id !== 'string'
-            || !turn.id
-            || (activeTurnId && activeTurnId !== turn.id)
-          ) return;
-          activeTurnId = turn.id;
-          resolveTurnIdentity(turn.id);
-          return;
-        }
         if (message.method === 'item/completed') {
           const { threadId: notificationThreadId, turnId, item } = message.params || {};
           if (
@@ -308,16 +334,17 @@ export class CodexPlanningAgent {
             notificationThreadId !== activeThreadId
             || !activeTurnId
             || turn?.id !== activeTurnId
+            || !isTerminalTurn(turn)
           ) return;
           turnTerminal = true;
+          resolveTerminalConfirmation(turn);
           if (turn.status === 'completed') resolveCompletion(finalMessage || 'Codex completed without a text contribution.');
           else rejectCompletion(new Error(`Codex could not complete the planning turn (${turn.status || 'unknown status'}).`));
         }
       });
 
       throwIfAborted(signal);
-      turnStartIssued = true;
-      const turnStart = Promise.resolve(connection.request('turn/start', {
+      const turnStartRequest = connection.request('turn/start', {
         threadId: activeThreadId,
         input: [{ type: 'text', text: prompt }],
         cwd: repositoryRoot,
@@ -329,48 +356,21 @@ export class CodexPlanningAgent {
           this.contributionTimeoutMs + this.interruptTimeoutMs + 1000,
           30000,
         ),
-      }));
+      });
+      // Mark only after request returns; a synchronous pre-dispatch throw remains unissued.
+      turnStartIssued = true;
+      turnStart = Promise.resolve(turnStartRequest);
       const turnStartResult = turnStart.then(startedTurn => {
         const turnId = startedTurn?.turn?.id;
         if (typeof turnId !== 'string' || !turnId) {
           throw new Error('The local Codex bridge returned an invalid turn start response.');
         }
-        return { source: 'response', turnId };
+        return turnId;
       });
-      try {
-        const acceptedTurn = await waitWithAbort(Promise.race([
-          turnStartResult,
-          turnIdentity.then(turnId => ({ source: 'notification', turnId })),
-          contributionDeadline,
-        ]), signal);
-        if (activeTurnId && activeTurnId !== acceptedTurn.turnId) {
-          throw new Error('The local Codex bridge returned inconsistent turn identity.');
-        }
-        activeTurnId = acceptedTurn.turnId;
-        resolveTurnIdentity(activeTurnId);
-      } catch (error) {
-        if (!activeTurnId) {
-          let identityTimeoutId;
-          const boundedIdentityWait = new Promise(resolve => {
-            identityTimeoutId = setTimeout(
-              () => resolve(''),
-              Math.max(1, Math.min(this.interruptTimeoutMs, 500)),
-            );
-          });
-          const lateResponseIdentity = new Promise(resolve => {
-            turnStart.then(startedTurn => {
-              const turnId = startedTurn?.turn?.id;
-              if (typeof turnId === 'string' && turnId) resolve(turnId);
-            }, () => {});
-          });
-          activeTurnId = await Promise.race([
-            turnIdentity,
-            lateResponseIdentity,
-            boundedIdentityWait,
-          ]).finally(() => clearTimeout(identityTimeoutId));
-        }
-        throw error;
-      }
+      activeTurnId = await waitWithAbort(Promise.race([
+        turnStartResult,
+        contributionDeadline,
+      ]), signal);
       throwIfAborted(signal);
 
       const content = await waitWithAbort(Promise.race([completion, contributionDeadline]), signal);
@@ -380,22 +380,74 @@ export class CodexPlanningAgent {
         ? error
         : new Error('Codex could not complete the planning contribution.');
       const cancelled = signal?.aborted || failure.code === 'CANCELLED';
-      const timedOut = failure.code === 'CODEX_TIMEOUT';
-      if (activeThreadId && activeTurnId && !turnTerminal) {
-        const interruptController = new AbortController();
-        const interruptDeadline = setTimeout(() => interruptController.abort(), this.interruptTimeoutMs);
-        await requestWithAbort(connection, 'turn/interrupt', {
-          threadId: activeThreadId,
-          turnId: activeTurnId,
-        }, {
-          signal: interruptController.signal,
-          timeoutMs: this.interruptTimeoutMs,
-        }).catch(() => {}).finally(() => clearTimeout(interruptDeadline));
+      let definitelyNotAccepted = isDefinitelyNotAccepted(failure);
+      if (turnStartIssued && !turnTerminal && !definitelyNotAccepted) {
+        const cleanupController = new AbortController();
+        const cleanupBudgetMs = Math.max(1, this.interruptTimeoutMs);
+        const cleanupDeadlineAt = Date.now() + cleanupBudgetMs;
+        const cleanupDeadline = setTimeout(() => cleanupController.abort(), cleanupBudgetMs);
+        try {
+          if (!activeTurnId) {
+            const lateTurnStartOutcome = turnStart?.then(
+              startedTurn => {
+                const turnId = startedTurn?.turn?.id;
+                return typeof turnId === 'string' && turnId
+                  ? { type: 'accepted', turnId }
+                  : { type: 'uncertain' };
+              },
+              lateFailure => ({
+                type: isDefinitelyNotAccepted(lateFailure) ? 'notAccepted' : 'uncertain',
+              }),
+            );
+            if (!lateTurnStartOutcome) throw cleanupUnconfirmedError();
+            const lateOutcome = await waitWithAbort(
+              lateTurnStartOutcome,
+              cleanupController.signal,
+            );
+            if (lateOutcome.type === 'notAccepted') definitelyNotAccepted = true;
+            else if (lateOutcome.type === 'accepted') activeTurnId = lateOutcome.turnId;
+            else throw cleanupUnconfirmedError();
+          }
+          if (!definitelyNotAccepted && (!activeThreadId || !activeTurnId)) {
+            throw cleanupUnconfirmedError();
+          }
+          if (!definitelyNotAccepted && !turnTerminal) {
+            const remainingCleanupMs = cleanupDeadlineAt - Date.now();
+            if (remainingCleanupMs <= 0) throw cleanupUnconfirmedError();
+            const terminalOutcome = waitWithAbort(
+              terminalConfirmation,
+              cleanupController.signal,
+            );
+            const interruptedTerminal = requestWithAbort(connection, 'turn/interrupt', {
+              threadId: activeThreadId,
+              turnId: activeTurnId,
+            }, {
+              signal: cleanupController.signal,
+              timeoutMs: remainingCleanupMs,
+            }).then(acknowledgement => {
+              if (!isInterruptAcknowledgement(acknowledgement)) {
+                throw cleanupUnconfirmedError();
+              }
+              return terminalOutcome;
+            });
+            const terminalTurn = await Promise.any([terminalOutcome, interruptedTerminal]);
+            if (terminalTurn?.id !== activeTurnId || !isTerminalTurn(terminalTurn)) {
+              throw cleanupUnconfirmedError();
+            }
+          }
+        } catch {
+          throw cleanupUnconfirmedError();
+        } finally {
+          cleanupController.abort();
+          clearTimeout(cleanupDeadline);
+        }
       }
       if (cancelled) {
         throw abortedError();
       }
-      failure.code ||= 'CODEX_FAILURE';
+      failure.code = isDefinitelyNotAccepted(failure)
+        ? 'CODEX_FAILURE'
+        : (failure.code || 'CODEX_FAILURE');
       throw failure;
     } finally {
       clearTimeout(contributionTimeoutId);

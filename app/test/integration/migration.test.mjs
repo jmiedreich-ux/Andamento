@@ -9,7 +9,11 @@ import { createFixture } from './test-support.mjs';
 
 const LEGACY_CREATED_AT = '2026-08-14T00:00:02.000Z';
 
-async function createLegacyV2Database(databasePath, { includeSource = true } = {}) {
+async function createLegacyV2Database(databasePath, {
+  includeSource = true,
+  decidedByAgent = false,
+  emptyDecisionTime = false,
+} = {}) {
   await mkdir(path.dirname(databasePath), { recursive: true });
   const legacy = new DatabaseSync(databasePath);
   try {
@@ -34,6 +38,12 @@ async function createLegacyV2Database(databasePath, { includeSource = true } = {
       INSERT INTO participants(id, participant_key, kind, display_name, created_at)
       VALUES ('owner-local', 'owner:local', 'OWNER', 'Owner', ?)
     `).run(LEGACY_CREATED_AT);
+    if (decidedByAgent) {
+      legacy.prepare(`
+        INSERT INTO participants(id, participant_key, kind, display_name, provider, model, created_at)
+        VALUES ('legacy-agent', 'agent:legacy', 'AGENT', 'Legacy agent', 'legacy', 'legacy', ?)
+      `).run(LEGACY_CREATED_AT);
+    }
     legacy.prepare(`
       INSERT INTO projects(id, name, repository_root, created_at)
       VALUES ('project-v2', 'Legacy project', 'C:\\legacy-repository', ?)
@@ -50,11 +60,18 @@ async function createLegacyV2Database(databasePath, { includeSource = true } = {
       INSERT INTO planning_points(
         id, discussion_id, source_message_id, created_by_participant_id, point_type, text,
         disposition, decided_by_participant_id, decided_at, created_at
-      ) VALUES (
-        'point-v2', 'discussion-v2', 'message-v2', 'owner-local', 'REQUIREMENT', 'Legacy accepted point.',
-        'ACCEPTED', 'owner-local', ?, ?
-      )
-    `).run(LEGACY_CREATED_AT, LEGACY_CREATED_AT);
+      ) VALUES (?, ?, ?, ?, ?, ?, 'ACCEPTED', ?, ?, ?)
+    `).run(
+      'point-v2',
+      'discussion-v2',
+      'message-v2',
+      'owner-local',
+      'REQUIREMENT',
+      'Legacy accepted point.',
+      decidedByAgent ? 'legacy-agent' : 'owner-local',
+      emptyDecisionTime ? '   ' : LEGACY_CREATED_AT,
+      LEGACY_CREATED_AT,
+    );
     legacy.prepare(`
       INSERT INTO work_packages(id, discussion_id, created_at)
       VALUES ('package-v2', 'discussion-v2', ?)
@@ -96,21 +113,49 @@ async function createLegacyV2Database(databasePath, { includeSource = true } = {
   }
 }
 
-test('migration 003 upgrades existing approvals and receipts without losing authority data', async t => {
+test('migrations 003 and 004 upgrade existing authority records without losing lineage', async t => {
   const fixture = await createFixture(t);
   const databasePath = path.join(fixture.root, 'legacy', 'andamento-v2.db');
   await createLegacyV2Database(databasePath);
 
   const upgraded = await openDatabase(databasePath);
   try {
-    assert.equal(Number(upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version), 3);
+    assert.equal(Number(upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version), 4);
     assert.deepEqual({ ...upgraded.prepare(`
       SELECT work_package_version_id AS versionId, planning_point_id AS pointId
       FROM approved_package_point_snapshots
     `).get() }, { versionId: 'version-v2', pointId: 'point-v2' });
+    assert.deepEqual({ ...upgraded.prepare(`
+      SELECT snapshots.planning_point_id AS pointId, snapshots.text,
+             points.decided_by_participant_id AS decidedBy
+      FROM planning_point_identity_snapshots snapshots
+      JOIN planning_points points ON points.id = snapshots.planning_point_id
+    `).get() }, {
+      pointId: 'point-v2',
+      text: 'Legacy accepted point.',
+      decidedBy: 'owner-local',
+    });
+    assert.deepEqual({ ...upgraded.prepare(`
+      SELECT planning_point_id AS pointId, disposition,
+             decided_by_participant_id AS decidedBy, decided_at AS decidedAt
+      FROM planning_point_decision_snapshots
+    `).get() }, {
+      pointId: 'point-v2',
+      disposition: 'ACCEPTED',
+      decidedBy: 'owner-local',
+      decidedAt: LEGACY_CREATED_AT,
+    });
+    assert.throws(() => upgraded.prepare(`
+      UPDATE planning_point_decision_snapshots SET disposition = 'REJECTED'
+      WHERE planning_point_id = 'point-v2'
+    `).run(), /append-only/);
     assert.equal(Number(upgraded.prepare(`
       SELECT COUNT(*) AS count FROM sqlite_master
       WHERE type = 'index' AND name = 'idx_approved_package_point_snapshots_point'
+    `).get().count), 1);
+    assert.equal(Number(upgraded.prepare(`
+      SELECT COUNT(*) AS count FROM sqlite_master
+      WHERE type = 'index' AND name = 'idx_agent_runs_cleanup_quarantine'
     `).get().count), 1);
     assert.equal(upgraded.prepare(`
       SELECT request_fingerprint AS fingerprint FROM mutation_receipts WHERE idempotency_key = 'legacy-key'
@@ -164,6 +209,64 @@ test('migration 003 refuses an approved v2 package with no source lineage', asyn
       SELECT COUNT(*) AS count FROM pragma_table_info('mutation_receipts')
       WHERE name = 'request_fingerprint'
     `).get().count, 0);
+  } finally {
+    unchanged.close();
+  }
+});
+
+test('migration 004 refuses legacy planning-point decisions without owner authority', async t => {
+  const fixture = await createFixture(t);
+  const databasePath = path.join(fixture.root, 'invalid-point-authority', 'andamento-v2.db');
+  await createLegacyV2Database(databasePath, { decidedByAgent: true });
+
+  await assert.rejects(openDatabase(databasePath), error => {
+    assert.match(error.message, /decided_points_require_owner_authority/);
+    return true;
+  });
+
+  const unchanged = new DatabaseSync(databasePath);
+  try {
+    assert.equal(Number(unchanged.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version), 3);
+    assert.equal(unchanged.prepare(`
+      SELECT decided_by_participant_id AS decidedBy FROM planning_points WHERE id = 'point-v2'
+    `).get().decidedBy, 'legacy-agent');
+    assert.equal(Number(unchanged.prepare(`
+      SELECT COUNT(*) AS count FROM sqlite_master
+      WHERE type = 'table' AND name = 'planning_point_identity_snapshots'
+    `).get().count), 0);
+    assert.equal(Number(unchanged.prepare(`
+      SELECT COUNT(*) AS count FROM sqlite_master
+      WHERE type = 'table' AND name = 'planning_point_decision_snapshots'
+    `).get().count), 0);
+    assert.equal(Number(unchanged.prepare(`
+      SELECT COUNT(*) AS count FROM approved_package_point_snapshots
+      WHERE work_package_version_id = 'version-v2'
+    `).get().count), 1);
+  } finally {
+    unchanged.close();
+  }
+});
+
+test('migration 004 refuses legacy decisions with empty decision time', async t => {
+  const fixture = await createFixture(t);
+  const databasePath = path.join(fixture.root, 'invalid-decision-time', 'andamento-v2.db');
+  await createLegacyV2Database(databasePath, { emptyDecisionTime: true });
+
+  await assert.rejects(openDatabase(databasePath), error => {
+    assert.match(error.message, /decided_points_require_owner_authority/);
+    return true;
+  });
+
+  const unchanged = new DatabaseSync(databasePath);
+  try {
+    assert.equal(Number(unchanged.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version), 3);
+    assert.equal(unchanged.prepare(`
+      SELECT decided_at AS decidedAt FROM planning_points WHERE id = 'point-v2'
+    `).get().decidedAt, '   ');
+    assert.equal(Number(unchanged.prepare(`
+      SELECT COUNT(*) AS count FROM sqlite_master
+      WHERE type = 'table' AND name = 'planning_point_decision_snapshots'
+    `).get().count), 0);
   } finally {
     unchanged.close();
   }

@@ -9,8 +9,8 @@
 - **System of record direction:** Local SQLite in WAL mode, accessed through a local application service.
 - **Existing prototype:** Google Sheets, Apps Script, and the Codex relay remain behavioral and integration evidence only. They are neither the intended authoritative backend nor visual design inputs for the new product.
 - **Repository state:** Initialized on `main` with private GitHub remote `https://github.com/jmiedreich-ux/Andamento`. The one-time repository bootstrap is administrative setup and does not authorize feature implementation.
-- **Implementation state:** Planning Loop Milestone 1 (`AND-N1-PLANNING-LOOP-v1`) is complete locally on `feature/planning-loop-m1` and ready for independent exact-head review. It stops at an immutable package marked `READY_FOR_EXECUTION`; package execution is out of scope.
-- **Verification state:** Implementation verification passed 14/14. Playwright passed 8/8 against the real UI, service, and on-disk SQLite boundary. The bounded Impeccable finish review returned PASS with no unresolved P0/P1 findings. Independent review and owner acceptance remain separate gates.
+- **Implementation state:** Planning Loop Milestone 1 (`AND-N1-PLANNING-LOOP-v1`) is a work-in-progress takeover checkpoint on `feature/planning-loop-m1`. The backend authority remediation is implemented, but the latest browser recovery work is incomplete and the branch is not ready for review or acceptance.
+- **Verification state:** On the exact takeover worktree, implementation verification passed 53/53. Playwright stopped with 1 passed, 1 failed, and 6 not run at `empty-validation-refusal`. The earlier Impeccable PASS predates the current UI delta and is no longer an exact-state gate. Independent review and owner acceptance remain pending.
 - **CI state:** Not configured.
 
 ## Working Model
@@ -33,4 +33,4 @@ Repository execution, implementation evidence, product review, and final product
 
 ## Exact Next Action
 
-Commit the bounded local milestone, obtain independent review of that exact head, resolve any material finding, and then synchronize the controlled records to `READY_FOR_OWNER_ACCEPTANCE` without pushing to GitHub.
+Publish the explicit owner-requested draft takeover checkpoint, then have the next coordinating agent claim the branch, finish route-scoped pending-input and bootstrap recovery, and restore the complete Playwright gate before fresh Impeccable and independent review.

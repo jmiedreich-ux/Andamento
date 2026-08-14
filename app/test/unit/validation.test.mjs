@@ -84,6 +84,12 @@ test('list and package validation normalize every field and report all approval 
   assert.deepEqual(complete.includedScope, ['source-linked scope']);
   assert.deepEqual(packageApprovalGaps(complete), []);
 
+  const maximumPlanningPoint = 'p'.repeat(2000);
+  assert.deepEqual(packageContent({ includedScope: [maximumPlanningPoint] }).includedScope, [maximumPlanningPoint]);
+  assertAppError(() => packageContent({ includedScope: [`${maximumPlanningPoint}p`] }), {
+    message: /Included scope item 1 must be 2000 characters or fewer/,
+  });
+
   assertAppError(() => packageContent(null), { message: /Package content is required/ });
   assertAppError(() => packageContent([]), { message: /Package content is required/ });
 });

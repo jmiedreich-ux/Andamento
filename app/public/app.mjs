@@ -10,6 +10,7 @@ const state = {
   projectId: '',
   returnProjectId: '',
   discussions: [],
+  discussionListUnavailable: false,
   discussionId: '',
   detail: null,
   feedback: null,
@@ -18,6 +19,7 @@ const state = {
   projectDraft: { name: '', repositoryRoot: '' },
   discussionDraft: { title: '' },
   composerDraft: { content: '', displayName: 'Claude', provider: 'Anthropic', model: '' },
+  composerRevision: 0,
   captureDrafts: {},
   replacementDrafts: {},
   captureMessageId: '',
@@ -30,11 +32,20 @@ const state = {
   packageDraftVersionId: '',
   packageDirty: false,
   packageConflict: null,
+  packageOrphan: null,
+  packageOrphanFocusPending: false,
   approvalArmedVersionId: '',
   viewedVersionId: '',
   pollTimer: null,
+  pollFailureCount: 0,
+  pollOutageActive: false,
   routeGeneration: 0,
+  detailRequestSequence: 0,
+  bootstrapRequestSequence: 0,
   mutationKeys: new Map(),
+  pendingRefreshOperations: new Map(),
+  pendingDraftRecoveries: new Map(),
+  recoverySequence: 0,
 };
 
 class ApiError extends Error {
@@ -59,13 +70,64 @@ function idempotencyKey(prefix) {
   return `${prefix}:${crypto.randomUUID()}`;
 }
 
-function operationKey(slot, prefix) {
-  if (!state.mutationKeys.has(slot)) state.mutationKeys.set(slot, idempotencyKey(prefix));
-  return state.mutationKeys.get(slot);
+function canonicalRequestValue(value) {
+  if (Array.isArray(value)) return value.map(item => canonicalRequestValue(item));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.keys(value)
+      .filter(key => value[key] !== undefined)
+      .sort()
+      .map(key => [key, canonicalRequestValue(value[key])]));
+  }
+  return value;
 }
 
-function completeOperation(slot) {
-  if (slot) state.mutationKeys.delete(slot);
+function operationKey(slot, prefix, { method = 'POST', target, payload = {}, recovery = null }) {
+  const fingerprint = JSON.stringify(canonicalRequestValue({
+    method: String(method).toUpperCase(),
+    target: String(target),
+    payload,
+  }));
+  let history = state.mutationKeys.get(slot);
+  if (!history) {
+    history = new Map();
+    state.mutationKeys.set(slot, history);
+  }
+  if (!history.has(fingerprint)) history.set(fingerprint, idempotencyKey(prefix));
+  if (recovery) {
+    let recoveries = state.pendingDraftRecoveries.get(slot);
+    if (!recoveries) {
+      recoveries = new Map();
+      state.pendingDraftRecoveries.set(slot, recoveries);
+    }
+    recoveries.set(fingerprint, {
+      ...structuredClone(recovery),
+      sequence: ++state.recoverySequence,
+    });
+  }
+  return history.get(fingerprint);
+}
+
+function clearOperation(slot) {
+  if (!slot) return;
+  state.mutationKeys.delete(slot);
+  state.pendingRefreshOperations.delete(slot);
+  state.pendingDraftRecoveries.delete(slot);
+}
+
+function clearOperationsForPrefix(prefix) {
+  for (const slot of state.mutationKeys.keys()) {
+    if (slot.startsWith(prefix)) clearOperation(slot);
+  }
+}
+
+function holdOperationUntilRefresh(slot, discussionId) {
+  if (slot) state.pendingRefreshOperations.set(slot, { discussionId });
+}
+
+function releasePendingRefreshOperations(discussionId = '') {
+  for (const [slot, pending] of state.pendingRefreshOperations) {
+    if (!discussionId || pending.discussionId === discussionId) clearOperation(slot);
+  }
 }
 
 function icon(name) {
@@ -113,16 +175,41 @@ function announce(message, assertive = false) {
 }
 
 async function api(path, options = {}) {
+  const { timeoutMs = 6_000, signal: externalSignal, ...fetchOptions } = options;
   const headers = { Accept: 'application/json', ...(options.headers || {}) };
   let body = options.body;
   if (body && typeof body !== 'string') {
     headers['Content-Type'] = 'application/json';
     body = JSON.stringify(body);
   }
-  const response = await fetch(path, { ...options, headers, body });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new ApiError(response.status, payload);
-  return payload;
+  const controller = new AbortController();
+  let timedOut = false;
+  const relayExternalAbort = () => controller.abort(externalSignal?.reason);
+  if (externalSignal?.aborted) relayExternalAbort();
+  else externalSignal?.addEventListener('abort', relayExternalAbort, { once: true });
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  try {
+    const response = await fetch(path, { ...fetchOptions, headers, body, signal: controller.signal });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new ApiError(response.status, payload);
+    return payload;
+  } catch (error) {
+    if (timedOut) {
+      const timeoutError = new Error(`The local service did not respond within ${Math.round(timeoutMs / 1000)} seconds.`);
+      timeoutError.code = 'REQUEST_UNCONFIRMED';
+      throw timeoutError;
+    }
+    if (error instanceof ApiError || externalSignal?.aborted) throw error;
+    const transportError = new Error(error?.message || 'The local service response could not be confirmed.');
+    transportError.code = 'REQUEST_UNCONFIRMED';
+    throw transportError;
+  } finally {
+    clearTimeout(timeout);
+    externalSignal?.removeEventListener('abort', relayExternalAbort);
+  }
 }
 
 function setBusy(key, value) {
@@ -134,8 +221,8 @@ function isBusy(key) {
   return state.busy.has(key);
 }
 
-function setFeedback(message, tone = 'error', details = undefined) {
-  state.feedback = { message, tone, details };
+function setFeedback(message, tone = 'error', details = undefined, source = 'action') {
+  state.feedback = { message, tone, details, source };
   announce(message, tone === 'error');
 }
 
@@ -143,12 +230,25 @@ function clearFeedback() {
   state.feedback = null;
 }
 
+function clearPollOutage({ announceRecovery = false } = {}) {
+  const wasActive = state.pollOutageActive;
+  const reconciledUnconfirmedMutation = state.feedback?.source === 'unconfirmed-mutation';
+  state.pollFailureCount = 0;
+  state.pollOutageActive = false;
+  releasePendingRefreshOperations(state.discussionId);
+  if (['poll', 'refresh', 'unconfirmed-mutation'].includes(state.feedback?.source)) clearFeedback();
+  if (wasActive && announceRecovery) announce('Local service connection restored.');
+  else if (reconciledUnconfirmedMutation) announce('Latest saved state reconciled.');
+}
+
 function feedbackMarkup(feedback = state.feedback) {
   if (!feedback) return '';
   const gaps = Array.isArray(feedback.details?.gaps)
     ? `<span>Missing: ${feedback.details.gaps.map(escapeHtml).join(', ')}.</span>` : '';
   const recovery = feedback.details?.current
-    ? '<button type="button" data-action="refresh-after-conflict">Refresh saved state</button>' : '';
+    ? '<button type="button" data-action="refresh-after-conflict">Refresh saved state</button>'
+    : feedback.source === 'unconfirmed-mutation'
+      ? '<button type="button" data-action="reconcile-unconfirmed">Reconcile saved state</button>' : '';
   return `<div class="feedback" data-tone="${escapeHtml(feedback.tone)}" role="${feedback.tone === 'error' ? 'alert' : 'status'}"><strong>${escapeHtml(feedback.message)}</strong>${gaps}${recovery}</div>`;
 }
 
@@ -159,20 +259,22 @@ function registrationMark() {
 function renderHeader() {
   const project = state.projects.find(item => item.id === state.projectId);
   const discussion = state.detail?.discussion;
+  const projectRegisterUnknown = state.phase === 'bootstrap-error' && !state.bootstrap;
   const projectOptions = state.projects.map(item => `<option value="${escapeHtml(item.id)}" ${item.id === state.projectId ? 'selected' : ''}>${escapeHtml(item.name)}</option>`).join('');
   const roomValue = discussion && project
     ? `<a class="header-value" href="#/projects/${escapeHtml(project.id)}" aria-label="Return to ${escapeHtml(project.name)} room list">${escapeHtml(discussion.title)}</a>`
-    : `<span class="header-value">${escapeHtml(project ? 'Project register' : 'First registration')}</span>`;
+    : `<span class="header-value">${escapeHtml(project ? 'Project register' : projectRegisterUnknown ? 'Register unavailable' : 'First registration')}</span>`;
   const localState = state.busy.size ? 'Saving locally…'
     : state.packageDirty ? 'Package edits unsaved'
       : state.feedback?.tone === 'error' ? 'Action needs attention' : 'Local service ready';
+  const projectRegistrationUnavailable = ['loading', 'bootstrap-error'].includes(state.phase);
   header.innerHTML = `
     <a class="brand" href="${project ? `#/projects/${escapeHtml(project.id)}` : '#/'}" aria-label="Andamento home">${registrationMark()}<span>Andamento</span></a>
     <div class="header-cell project-cell">
       <span class="header-label">Project</span>
       ${state.projects.length
         ? `<select class="header-project-select" id="headerProject" aria-label="Current project"><option value="">Select project</option>${projectOptions}</select>`
-        : '<span class="header-value">No project registered</span>'}
+        : `<span class="header-value">${projectRegisterUnknown ? 'Project status unknown' : 'No project registered'}</span>`}
     </div>
     <div class="header-cell room-cell">
       <span class="header-label">Room</span>
@@ -180,7 +282,7 @@ function renderHeader() {
     </div>
     <div class="header-actions">
       <span class="local-status">${escapeHtml(localState)}</span>
-      <button type="button" class="icon-button" data-action="new-project" aria-label="Register another project" title="Register another project">${icon('plus')}</button>
+      <button type="button" class="icon-button" data-action="new-project" aria-label="Register another project" title="${projectRegistrationUnavailable ? 'Wait for the local project register' : 'Register another project'}" ${projectRegistrationUnavailable ? 'disabled' : ''}>${icon('plus')}</button>
     </div>
   `;
 }
@@ -194,8 +296,21 @@ function renderLoading() {
     </div>`;
 }
 
+function renderBootstrapError() {
+  app.innerHTML = `
+    <section class="onboarding" aria-labelledby="bootstrapErrorTitle">
+      ${registrationMark()}
+      <h1 id="bootstrapErrorTitle">Local service unavailable</h1>
+      <p class="onboarding-intro">Andamento could not load the local project register. Existing planning data may still be present, so project registration is paused until the service responds.</p>
+      ${feedbackMarkup()}
+      <button type="button" class="primary-action" data-action="retry-bootstrap">Try local service again</button>
+      <p class="lineage-footnote">No project, discussion, or package state was changed.</p>
+    </section>`;
+}
+
 function renderNewProject() {
   const firstRun = state.projects.length === 0;
+  const projectBusy = isBusy('project');
   app.innerHTML = `
     <section class="onboarding" aria-labelledby="registrationTitle">
       ${registrationMark()}
@@ -205,23 +320,26 @@ function renderNewProject() {
       <form class="registration-line" data-form="project" novalidate>
         <div class="field">
           <label for="projectName">Project name</label>
-          <input id="projectName" name="name" type="text" required maxlength="80" autocomplete="off" value="${escapeHtml(state.projectDraft.name)}" placeholder="My product">
+          <input id="projectName" name="name" type="text" required maxlength="80" autocomplete="off" value="${escapeHtml(state.projectDraft.name)}" placeholder="My product" ${projectBusy ? 'disabled' : ''}>
         </div>
         <div class="field">
           <label for="repositoryRoot">Local Git repository</label>
-          <input id="repositoryRoot" name="repositoryRoot" type="text" required maxlength="1000" autocomplete="off" value="${escapeHtml(state.projectDraft.repositoryRoot)}" placeholder="C:\\development\\project">
+          <input id="repositoryRoot" name="repositoryRoot" type="text" required maxlength="1000" autocomplete="off" value="${escapeHtml(state.projectDraft.repositoryRoot)}" placeholder="C:\\development\\project" ${projectBusy ? 'disabled' : ''}>
           <p class="field-help">The service validates the directory and records it as this project's allowed root.</p>
         </div>
-        <button class="primary-action" type="submit" ${isBusy('project') ? 'disabled' : ''}>${isBusy('project') ? 'Registering…' : 'Register project'}</button>
+        <button class="primary-action" type="submit" ${projectBusy ? 'disabled' : ''}>${projectBusy ? 'Registering…' : 'Register project'}</button>
       </form>
-      ${firstRun ? '<p class="lineage-footnote">Local service · SQLite WAL · no provider connection required</p>' : '<button type="button" class="text-action" data-action="cancel-new-project">Return to current project</button>'}
+      ${firstRun ? '<p class="lineage-footnote">Local service · SQLite WAL · no provider connection required</p>' : `<button type="button" class="text-action" data-action="cancel-new-project" ${projectBusy ? 'disabled' : ''}>Return to current project</button>`}
     </section>`;
 }
 
 function renderProjectRegister() {
   const project = state.projects.find(item => item.id === state.projectId);
   if (!project) return renderNewProject();
-  const roomRows = state.discussions.length
+  const discussionBusy = isBusy('discussion');
+  const roomRows = state.discussionListUnavailable
+    ? `<li class="empty-trace"><h2>Planning room list unavailable</h2><p>Andamento could not confirm whether rooms already exist. Room creation is paused to prevent duplicates.</p><button type="button" data-action="retry-room-list">Try room list again</button></li>`
+    : state.discussions.length
     ? state.discussions.map((room, index) => `
         <li class="room-row">
           <span class="room-index">ROOM ${String(index + 1).padStart(2, '0')}</span>
@@ -245,15 +363,16 @@ function renderProjectRegister() {
       <form class="new-room-form" data-form="discussion" novalidate>
         <div class="field">
           <label for="roomTitle">New planning room</label>
-          <input id="roomTitle" name="title" type="text" required maxlength="120" autocomplete="off" value="${escapeHtml(state.discussionDraft.title)}" placeholder="Plan a durable capability">
+          <input id="roomTitle" name="title" type="text" required maxlength="120" autocomplete="off" value="${escapeHtml(state.discussionDraft.title)}" placeholder="Plan a durable capability" ${discussionBusy || state.discussionListUnavailable ? 'disabled' : ''}>
         </div>
-        <button class="primary-action" type="submit" ${isBusy('discussion') ? 'disabled' : ''}>${isBusy('discussion') ? 'Opening…' : 'Open room'}</button>
+        <button class="primary-action" type="submit" ${discussionBusy || state.discussionListUnavailable ? 'disabled' : ''}>${discussionBusy ? 'Opening…' : 'Open room'}</button>
       </form>
     </section>`;
 }
 
 function messageMarkup(message) {
   const isCapture = state.captureMessageId === message.id;
+  const captureBusy = isBusy(`capture:${message.id}`);
   const provider = message.participant.provider ? `${message.participant.provider}${message.participant.model ? ` · ${message.participant.model}` : ''}` : 'Local owner';
   return `
     <li>
@@ -269,7 +388,7 @@ function messageMarkup(message) {
           <p class="message-content">${escapeHtml(message.content)}</p>
         </div>
         <div class="message-actions">
-          <button type="button" data-action="toggle-capture" data-message-id="${escapeHtml(message.id)}" aria-label="Capture point" aria-expanded="${isCapture}" aria-controls="capture-${escapeHtml(message.id)}">
+          <button type="button" data-action="toggle-capture" data-message-id="${escapeHtml(message.id)}" aria-label="Capture point" aria-expanded="${isCapture}" aria-controls="capture-${escapeHtml(message.id)}" ${captureBusy ? 'disabled' : ''}>
             <span class="button-icon">${icon('source')}</span><span class="button-label"> Capture point</span>
           </button>
         </div>
@@ -284,26 +403,32 @@ function captureDraft(message) {
 
 function captureFormMarkup(message) {
   const draft = captureDraft(message);
+  const captureBusy = isBusy(`capture:${message.id}`);
   return `
     <form class="capture-form" id="capture-${escapeHtml(message.id)}" data-form="capture-point" data-message-id="${escapeHtml(message.id)}">
       <div class="field">
         <label for="pointType-${escapeHtml(message.id)}">Point type</label>
-        <select id="pointType-${escapeHtml(message.id)}" name="pointType">${pointTypeOptions(draft.pointType)}</select>
+        <select id="pointType-${escapeHtml(message.id)}" name="pointType" ${captureBusy ? 'disabled' : ''}>${pointTypeOptions(draft.pointType)}</select>
       </div>
       <div class="field">
         <label for="pointText-${escapeHtml(message.id)}">Proposed planning point</label>
-        <textarea id="pointText-${escapeHtml(message.id)}" name="text" required maxlength="2000">${escapeHtml(draft.text)}</textarea>
+        <textarea id="pointText-${escapeHtml(message.id)}" name="text" required maxlength="2000" ${captureBusy ? 'disabled' : ''}>${escapeHtml(draft.text)}</textarea>
       </div>
       <div class="form-actions">
-        <button type="button" class="text-action" data-action="close-capture">Cancel</button>
-        <button type="submit" class="primary-action" ${isBusy(`capture:${message.id}`) ? 'disabled' : ''}>Add proposal</button>
+        <button type="button" class="text-action" data-action="close-capture" ${captureBusy ? 'disabled' : ''}>Cancel</button>
+        <button type="submit" class="primary-action" ${captureBusy ? 'disabled' : ''}>${captureBusy ? 'Adding…' : 'Add proposal'}</button>
       </div>
     </form>`;
 }
 
 function runMarkup(run) {
   if (run.status === 'COMPLETED') return '';
-  const canRetry = ['FAILED', 'INTERRUPTED'].includes(run.status);
+  const promptPreserved = ['FAILED', 'INTERRUPTED'].includes(run.status);
+  const cleanupPending = run.errorCode === 'CODEX_CLEANUP_PENDING';
+  const cleanupUnconfirmed = run.errorCode === 'CODEX_CLEANUP_UNCONFIRMED';
+  const cleanupBlocked = cleanupPending || cleanupUnconfirmed;
+  const canRetry = promptPreserved && !cleanupBlocked;
+  const runBusy = isBusy(`run:${run.id}`);
   return `
     <li>
       <article class="run-trace" data-status="${escapeHtml(run.status)}">
@@ -315,12 +440,14 @@ function runMarkup(run) {
         <div class="message-body">
           <div class="message-role">${run.status === 'RUNNING' ? 'Contribution in progress' : 'Contribution needs attention'}</div>
           <p class="message-content">${escapeHtml(run.status === 'RUNNING' ? run.prompt : run.errorMessage)}</p>
-          ${canRetry ? `<p class="source-summary">Prompt preserved: ${escapeHtml(run.prompt)}</p>` : ''}
+          ${promptPreserved ? `<p class="source-summary">Prompt preserved: ${escapeHtml(run.prompt)}</p>` : ''}
+          ${cleanupPending ? '<p class="source-summary" role="status">Retry is blocked while Andamento confirms that the Codex turn stopped. Owner notes, imported input, and other available participants remain usable.</p>' : ''}
+          ${cleanupUnconfirmed ? '<p class="source-summary" role="status">Retry is blocked until Codex cleanup can be confirmed. Owner notes, imported input, and other available participants remain usable.</p>' : ''}
         </div>
         <div class="message-actions">
           ${run.status === 'RUNNING'
-            ? `<button type="button" data-action="cancel-run" data-run-id="${escapeHtml(run.id)}">${icon('stop')}<span class="visually-hidden">Cancel contribution</span></button>`
-            : `<button type="button" data-action="retry-run" data-run-id="${escapeHtml(run.id)}" aria-label="Retry">${icon('retry')}<span class="button-label"> Retry</span></button>`}
+            ? `<button type="button" data-action="cancel-run" data-run-id="${escapeHtml(run.id)}" ${runBusy ? 'disabled' : ''}>${icon('stop')}<span class="visually-hidden">${runBusy ? 'Cancelling contribution' : 'Cancel contribution'}</span></button>`
+            : canRetry ? `<button type="button" data-action="retry-run" data-run-id="${escapeHtml(run.id)}" aria-label="${runBusy ? 'Retrying' : 'Retry'}" ${runBusy ? 'disabled' : ''}>${icon('retry')}<span class="button-label"> ${runBusy ? 'Retrying…' : 'Retry'}</span></button>` : ''}
         </div>
       </article>
     </li>`;
@@ -328,9 +455,13 @@ function runMarkup(run) {
 
 function composerMarkup() {
   const capabilities = state.bootstrap.capabilities;
+  const codexAvailability = state.detail?.agentAvailability?.codex || { blocked: false, reason: '' };
+  const codexBlocked = Boolean(codexAvailability.blocked);
+  const codexDisabled = !capabilities.codex.available || codexBlocked;
+  const codexDisabledReason = codexBlocked ? codexAvailability.reason : capabilities.codex.reason;
   const modes = [
     { id: 'owner', label: 'Owner note', disabled: false },
-    { id: 'codex', label: 'Ask Codex', disabled: !capabilities.codex.available, reason: capabilities.codex.reason },
+    { id: 'codex', label: 'Ask Codex', disabled: codexDisabled, reason: codexDisabledReason },
     { id: 'imported', label: 'Import agent input', disabled: false },
     ...(capabilities.deterministic.available ? [{ id: 'deterministic', label: 'Test participant', disabled: false }] : []),
   ];
@@ -347,8 +478,12 @@ function composerMarkup() {
   const guidance = state.composerMode === 'owner' ? 'Owner notes remain context until you decide a planning point.'
     : state.composerMode === 'imported' ? 'Paste only content you are allowed to store locally.'
       : 'The participant can recommend and challenge; it cannot approve.';
-  const capabilityNote = !capabilities.codex.available
-    ? `<div class="capability-note" role="status"><span>Codex is unavailable: ${escapeHtml(capabilities.codex.reason)} Import attributed input to keep planning.</span><button type="button" data-action="refresh-capabilities" ${isBusy('capabilities') ? 'disabled' : ''}>${isBusy('capabilities') ? 'Checking…' : 'Check bridge again'}</button></div>` : '';
+  const capabilityNote = codexBlocked
+    ? `<div class="capability-note" id="codexCapabilityNote" role="status"><span>Codex is blocked in this room: ${escapeHtml(codexAvailability.reason)} Owner notes, imported input, and other available participants remain usable.</span></div>`
+    : !capabilities.codex.available
+      ? `<div class="capability-note" id="codexCapabilityNote" role="status"><span>Codex is unavailable: ${escapeHtml(capabilities.codex.reason)} Import attributed input to keep planning.</span><button type="button" data-action="refresh-capabilities" ${isBusy('capabilities') ? 'disabled' : ''}>${isBusy('capabilities') ? 'Checking…' : 'Check bridge again'}</button></div>` : '';
+  const codexSubmissionBlocked = state.composerMode === 'codex' && codexBlocked;
+  const messageBusy = isBusy('message');
   return `
     <section class="composer" aria-labelledby="composerTitle">
       <h2 id="composerTitle" class="visually-hidden">Add to discussion</h2>
@@ -363,8 +498,8 @@ function composerMarkup() {
         <div class="composer-footer">
           <p class="composer-guidance">${escapeHtml(guidance)}</p>
           <div class="form-actions">
-            <button type="button" class="text-action" data-action="clear-composer">Cancel</button>
-            <button type="submit" class="primary-action" ${isBusy('message') ? 'disabled' : ''}>${isBusy('message') ? 'Adding…' : state.composerMode === 'owner' || state.composerMode === 'imported' ? 'Add to discussion' : 'Request contribution'}</button>
+            <button type="button" class="text-action" data-action="clear-composer" ${messageBusy ? 'disabled' : ''}>Cancel</button>
+            <button type="submit" class="primary-action" ${messageBusy || codexSubmissionBlocked ? 'disabled' : ''} ${codexSubmissionBlocked ? 'aria-describedby="codexCapabilityNote"' : ''}>${messageBusy ? 'Adding…' : codexSubmissionBlocked ? 'Codex blocked' : state.composerMode === 'owner' || state.composerMode === 'imported' ? 'Add to discussion' : 'Request contribution'}</button>
           </div>
         </div>
       </form>
@@ -375,6 +510,9 @@ function decisionMarkup(point, index) {
   const editing = state.editPointId === point.id;
   const proposed = point.disposition === 'PROPOSED';
   const editDraft = state.replacementDrafts[point.id] || { pointType: point.pointType, text: point.text };
+  const replacementBusy = isBusy(`replace:${point.id}`);
+  const decisionBusy = isBusy(`point:${point.id}`);
+  const pointBusy = replacementBusy || decisionBusy;
   return `
     <li class="decision-row" id="point-${escapeHtml(point.id)}" data-state="${escapeHtml(point.disposition)}" tabindex="-1">
       ${stateIcon(point.disposition)}
@@ -385,17 +523,18 @@ function decisionMarkup(point, index) {
       </div>
       ${proposed ? `<div class="decision-actions">
         <div class="disposition-actions" role="group" aria-label="Decide this planning point">
-          <button type="button" data-action="disposition" data-point-id="${escapeHtml(point.id)}" data-version="${point.rowVersion}" data-disposition="ACCEPTED">Accept</button>
-          <button type="button" data-action="disposition" data-point-id="${escapeHtml(point.id)}" data-version="${point.rowVersion}" data-disposition="DEFERRED">Defer</button>
-          <button type="button" data-action="disposition" data-point-id="${escapeHtml(point.id)}" data-version="${point.rowVersion}" data-disposition="REJECTED">Reject</button>
+          <button type="button" data-action="disposition" data-point-id="${escapeHtml(point.id)}" data-version="${point.rowVersion}" data-disposition="ACCEPTED" ${pointBusy ? 'disabled' : ''}>Accept</button>
+          <button type="button" data-action="disposition" data-point-id="${escapeHtml(point.id)}" data-version="${point.rowVersion}" data-disposition="DEFERRED" ${pointBusy ? 'disabled' : ''}>Defer</button>
+          <button type="button" data-action="disposition" data-point-id="${escapeHtml(point.id)}" data-version="${point.rowVersion}" data-disposition="REJECTED" ${pointBusy ? 'disabled' : ''}>Reject</button>
         </div>
-        <button type="button" class="point-edit-action" data-action="edit-point" data-point-id="${escapeHtml(point.id)}">Edit proposal</button>
+        ${decisionBusy ? '<span class="source-summary" role="status">Recording owner decision…</span>' : ''}
+        <button type="button" class="point-edit-action" data-action="edit-point" data-point-id="${escapeHtml(point.id)}" ${pointBusy ? 'disabled' : ''}>Edit proposal</button>
       </div>` : ''}
       ${editing ? `
         <form class="point-edit-form" data-form="replace-point" data-point-id="${escapeHtml(point.id)}" data-version="${point.rowVersion}">
-          <div class="field"><label for="editType-${escapeHtml(point.id)}">Point type</label><select id="editType-${escapeHtml(point.id)}" name="pointType">${pointTypeOptions(editDraft.pointType)}</select></div>
-          <div class="field"><label for="editText-${escapeHtml(point.id)}">Replacement proposal</label><textarea id="editText-${escapeHtml(point.id)}" name="text" maxlength="2000" required>${escapeHtml(editDraft.text)}</textarea></div>
-          <div class="form-actions"><button type="button" class="text-action" data-action="cancel-edit-point">Cancel</button><button class="primary-action" type="submit">Create replacement</button></div>
+          <div class="field"><label for="editType-${escapeHtml(point.id)}">Point type</label><select id="editType-${escapeHtml(point.id)}" name="pointType" ${pointBusy ? 'disabled' : ''}>${pointTypeOptions(editDraft.pointType)}</select></div>
+          <div class="field"><label for="editText-${escapeHtml(point.id)}">Replacement proposal</label><textarea id="editText-${escapeHtml(point.id)}" name="text" maxlength="2000" required ${pointBusy ? 'disabled' : ''}>${escapeHtml(editDraft.text)}</textarea></div>
+          <div class="form-actions"><button type="button" class="text-action" data-action="cancel-edit-point" ${pointBusy ? 'disabled' : ''}>Cancel</button><button class="primary-action" type="submit" ${pointBusy ? 'disabled' : ''}>${replacementBusy ? 'Creating…' : decisionBusy ? 'Decision pending…' : 'Create replacement'}</button></div>
         </form>` : ''}
     </li>`;
 }
@@ -444,6 +583,14 @@ function draftFromPackageContent(content = {}) {
   };
 }
 
+function normalizedPackageDraft(draft) {
+  return draftFromPackageContent(contentFromPackageDraft(draft));
+}
+
+function packageDraftsEqual(left, right) {
+  return Object.keys(blankPackageDraft()).every(name => left[name] === right[name]);
+}
+
 function applyPackageVersionToDetail(version) {
   const workPackage = state.detail?.workPackage;
   if (!workPackage || !version) return;
@@ -451,16 +598,56 @@ function applyPackageVersionToDetail(version) {
   workPackage.versions = workPackage.versions.map(item => item.id === version.id ? version : item);
 }
 
+function clearActivePackageDraft() {
+  state.packageDraft = null;
+  state.packageBase = null;
+  state.packageBaseRowVersion = null;
+  state.packageDraftVersionId = '';
+  state.packageDirty = false;
+  state.packageConflict = null;
+  disarmApproval();
+}
+
+function preserveOrphanedPackageDraft(current) {
+  const unresolvedFields = state.packageConflict?.fieldConflicts || {};
+  if ((!state.packageDirty && !Object.keys(unresolvedFields).length) || !state.packageDraft || !state.packageDraftVersionId || state.packageOrphan) return;
+  const sourceVersion = state.detail?.workPackage?.versions
+    .find(version => version.id === state.packageDraftVersionId);
+  const priorBase = state.packageBase || blankPackageDraft();
+  const localDraft = { ...state.packageDraft };
+  for (const [name, values] of Object.entries(unresolvedFields)) localDraft[name] = values.local;
+  const normalizedLocal = normalizedPackageDraft(localDraft);
+  const normalizedPriorBase = normalizedPackageDraft(priorBase);
+  const sourceDraft = sourceVersion
+    ? draftFromPackageContent(sourceVersion.content)
+    : normalizedPriorBase;
+  const heldDraft = { ...sourceDraft };
+  for (const name of Object.keys(heldDraft)) {
+    if (normalizedLocal[name] !== normalizedPriorBase[name] || Object.hasOwn(unresolvedFields, name)) {
+      heldDraft[name] = localDraft[name];
+    }
+  }
+  if (packageDraftsEqual(normalizedPackageDraft(heldDraft), normalizedPackageDraft(sourceDraft))) return;
+  state.packageOrphan = {
+    draft: heldDraft,
+    base: sourceDraft,
+    sourceVersionId: state.packageDraftVersionId,
+    sourceVersionNumber: sourceVersion?.versionNumber || '',
+  };
+  state.packageOrphanFocusPending = true;
+  if (current?.id) state.viewedVersionId = current.id;
+}
+
 function syncPackageDraft() {
   const current = state.detail?.workPackage?.currentVersion;
+  const activeDraftStillCurrent = Boolean(
+    current
+    && current.status === 'DRAFT'
+    && state.packageDraftVersionId === current.id,
+  );
+  if (!activeDraftStillCurrent) preserveOrphanedPackageDraft(current);
   if (!current || current.status !== 'DRAFT') {
-    state.packageDraft = null;
-    state.packageBase = null;
-    state.packageBaseRowVersion = null;
-    state.packageDraftVersionId = '';
-    state.packageDirty = false;
-    state.packageConflict = null;
-    disarmApproval();
+    clearActivePackageDraft();
     return;
   }
   if (state.packageDraftVersionId === current.id && state.packageDraft) {
@@ -488,14 +675,84 @@ function syncPackageDraft() {
   state.packageConflict = null;
 }
 
+function rebasePackageChanges(localDraft, priorBase, current) {
+  const latestBase = draftFromPackageContent(current.content);
+  const mergedDraft = { ...latestBase };
+  const fieldConflicts = {};
+  for (const name of Object.keys(latestBase)) {
+    const localChanged = localDraft[name] !== priorBase[name];
+    const latestChanged = latestBase[name] !== priorBase[name];
+    if (localChanged && latestChanged && localDraft[name] !== latestBase[name]) {
+      fieldConflicts[name] = { local: localDraft[name], latest: latestBase[name] };
+      mergedDraft[name] = localDraft[name];
+    } else if (localChanged) mergedDraft[name] = localDraft[name];
+  }
+  return { latestBase, mergedDraft, fieldConflicts };
+}
+
+function installRebasedPackageDraft({ localDraft, priorBase, current, carried = false }) {
+  const { latestBase, mergedDraft, fieldConflicts } = rebasePackageChanges(localDraft, priorBase, current);
+  applyPackageVersionToDetail(current);
+  state.packageDraftVersionId = current.id;
+  state.packageBase = latestBase;
+  state.packageBaseRowVersion = current.rowVersion;
+  state.packageDraft = mergedDraft;
+  state.packageDirty = Object.keys(mergedDraft).some(name => mergedDraft[name] !== latestBase[name]);
+  disarmApproval();
+  state.packageConflict = {
+    current,
+    rebased: true,
+    fieldConflicts,
+    message: Object.keys(fieldConflicts).length
+      ? 'Some fields changed in both views. Choose each value before saving.'
+      : carried
+        ? 'Your held edits are applied to the current draft for review.'
+        : 'Your non-overlapping changes are reapplied to the latest saved version.',
+  };
+}
+
 function packageField(label, name, help = '') {
   const value = state.packageDraft?.[name] || '';
-  const locked = isBusy('package-save') || isBusy('package-approve');
+  const maxLength = {
+    outcome: 4000,
+    includedScope: 200099,
+    exclusions: 120099,
+    acceptanceCriteria: 120099,
+    reviewRequirements: 60049,
+    evidenceRequirements: 60049,
+  }[name];
+  const locked = isBusy('package-save')
+    || isBusy('package-approve')
+    || Boolean(state.packageOrphan)
+    || Boolean(state.packageConflict?.fieldConflicts?.[name]);
   return `
     <div class="package-field" data-field="${escapeHtml(name)}">
       <label class="field-label" for="package-${escapeHtml(name)}">${escapeHtml(label)}</label>
-      <textarea id="package-${escapeHtml(name)}" name="${escapeHtml(name)}" ${name === 'outcome' ? 'maxlength="4000"' : 'maxlength="12000"'} placeholder="${name === 'exclusions' ? 'State an explicit exclusion, or write None for this package.' : ''}" ${locked ? 'disabled' : ''}>${escapeHtml(value)}</textarea>
+      <textarea id="package-${escapeHtml(name)}" name="${escapeHtml(name)}" maxlength="${maxLength}" placeholder="${name === 'exclusions' ? 'State an explicit exclusion, or write None for this package.' : ''}" ${locked ? 'disabled' : ''}>${escapeHtml(value)}</textarea>
       ${help ? `<p class="field-help">${escapeHtml(help)}</p>` : ''}
+    </div>`;
+}
+
+function packageOrphanMarkup(current) {
+  const orphan = state.packageOrphan;
+  if (!orphan || !current) return '';
+  const changedFields = Object.keys(orphan.draft)
+    .filter(name => orphan.draft[name] !== orphan.base[name])
+    .map(packageFieldLabel);
+  const actionLabel = current.status === 'DRAFT'
+    ? `Compare and carry edits into v${current.versionNumber}`
+    : `Create v${current.versionNumber + 1} and carry edits`;
+  const carrying = isBusy('carry-package');
+  const recoveryLocked = carrying || isPackageMutationBusy();
+  return `
+    <div class="feedback package-orphan" data-tone="warning" role="alert">
+      <strong>Your unsaved edits were not part of approved v${escapeHtml(orphan.sourceVersionNumber || current.versionNumber)}.</strong>
+      <span>They remain held in this browser and have not changed any approved version.</span>
+      ${changedFields.length ? `<span>Held fields: ${changedFields.map(escapeHtml).join(', ')}.</span>` : ''}
+      <div class="feedback-actions">
+        <button type="button" data-action="carry-orphan-package" ${recoveryLocked ? 'disabled' : ''}>${carrying ? 'Preparing recovery…' : escapeHtml(actionLabel)}</button>
+        <button type="button" data-action="discard-orphan-package" ${recoveryLocked ? 'disabled' : ''}>Discard held edits</button>
+      </div>
     </div>`;
 }
 
@@ -525,6 +782,10 @@ function hasUnresolvedPackageFields() {
   return Boolean(Object.keys(state.packageConflict?.fieldConflicts || {}).length);
 }
 
+function isPackageMutationBusy() {
+  return ['package-save', 'package-approve', 'carry-package', 'next-version'].some(isBusy);
+}
+
 function disarmApproval() {
   state.approvalArmedVersionId = '';
 }
@@ -542,13 +803,14 @@ function packageStationMarkup() {
   const acceptedCount = state.detail.points.filter(point => point.disposition === 'ACCEPTED').length;
   const workPackage = state.detail.workPackage;
   if (!workPackage) {
+    const prepareBusy = isBusy('prepare-package');
     return `
       <section class="package-station" id="packageStation" role="tabpanel" aria-labelledby="packageTab packageTitle" tabindex="-1">
         <div class="station-head"><div class="station-title"><h2 id="packageTitle">Work package</h2><span class="station-meta">Not prepared</span></div></div>
         <div class="package-scroll"><div class="package-empty">
           <h3>Collect accepted points</h3>
           <p>${acceptedCount ? `${acceptedCount} accepted point${acceptedCount === 1 ? ' is' : 's are'} ready to become a bounded package.` : 'Accept at least one planning point before preparing a package.'}</p>
-          <button type="button" class="primary-action" data-action="prepare-package" ${acceptedCount ? '' : 'disabled'}>${icon('package')} Prepare package</button>
+          <button type="button" class="primary-action" data-action="prepare-package" ${acceptedCount && !prepareBusy ? '' : 'disabled'}>${icon('package')} ${prepareBusy ? 'Preparing…' : 'Prepare package'}</button>
         </div></div>
       </section>`;
   }
@@ -556,7 +818,8 @@ function packageStationMarkup() {
   const versions = workPackage.versions;
   const selected = versions.find(version => version.id === state.viewedVersionId) || workPackage.currentVersion;
   if (!selected) return '';
-  const history = versions.map(version => `<button type="button" data-action="view-version" data-version-id="${escapeHtml(version.id)}" aria-current="${selected.id === version.id}">v${version.versionNumber} · ${version.status === 'DRAFT' ? 'Draft' : 'Approved'}</button>`).join('');
+  const packageMutationBusy = isPackageMutationBusy();
+  const history = versions.map(version => `<button type="button" data-action="view-version" data-version-id="${escapeHtml(version.id)}" aria-current="${selected.id === version.id}" ${packageMutationBusy ? 'disabled' : ''}>v${version.versionNumber} · ${version.status === 'DRAFT' ? 'Draft' : 'Approved'}</button>`).join('');
   const approval = workPackage.approvals.find(item => item.workPackageVersionId === selected.id);
   const isApprovalArmed = state.approvalArmedVersionId === selected.id;
   const completeness = packageCompleteness(state.packageDraft || draftFromPackageContent(selected.content));
@@ -566,7 +829,7 @@ function packageStationMarkup() {
     <section class="field-collision" aria-labelledby="collision-${escapeHtml(name)}">
       <strong id="collision-${escapeHtml(name)}">${escapeHtml(packageFieldLabel(name))} changed in both views</strong>
       <div class="collision-values"><div><span>Yours</span><pre>${escapeHtml(values.local || '(empty)')}</pre></div><div><span>Latest saved</span><pre>${escapeHtml(values.latest || '(empty)')}</pre></div></div>
-      <div class="feedback-actions"><button type="button" data-action="resolve-package-field" data-field="${escapeHtml(name)}" data-choice="local">Keep yours</button><button type="button" data-action="resolve-package-field" data-field="${escapeHtml(name)}" data-choice="latest">Use latest</button></div>
+      <div class="feedback-actions"><button type="button" id="resolve-package-${escapeHtml(name)}-local" data-action="resolve-package-field" data-field="${escapeHtml(name)}" data-choice="local" ${packageMutationBusy ? 'disabled' : ''}>Keep yours</button><button type="button" id="resolve-package-${escapeHtml(name)}-latest" data-action="resolve-package-field" data-field="${escapeHtml(name)}" data-choice="latest" ${packageMutationBusy ? 'disabled' : ''}>Use latest</button></div>
     </section>`).join('');
   const conflictMarkup = state.packageConflict ? `
     <div class="feedback" data-tone="warning" role="alert">
@@ -574,7 +837,7 @@ function packageStationMarkup() {
       <span>Your entered package text is still here.</span>
       ${collisionMarkup}
       ${state.packageConflict.rebased && !hasUnresolvedPackageFields() ? '<span>All changed fields are resolved. Review the combined draft, then save.</span>' : ''}
-      <div class="feedback-actions">${state.packageConflict.rebased ? '' : '<button type="button" data-action="retry-package-conflict">Compare and reapply changes</button>'}<button type="button" data-action="discard-package">Use latest saved version</button></div>
+      <div class="feedback-actions">${state.packageConflict.rebased ? '' : `<button type="button" data-action="retry-package-conflict" ${packageMutationBusy ? 'disabled' : ''}>Compare and reapply changes</button>`}<button type="button" data-action="discard-package" ${packageMutationBusy ? 'disabled' : ''}>Use latest saved version</button></div>
     </div>` : '';
 
   const body = selected.status === 'DRAFT' && selected.id === workPackage.currentVersion.id
@@ -588,8 +851,8 @@ function packageStationMarkup() {
         <div class="package-footer">
           ${conflictMarkup}
           <div class="form-actions">
-            <button type="button" class="text-action" data-action="discard-package" ${state.packageDirty ? '' : 'disabled'}>Discard edits</button>
-            <button type="submit" ${isBusy('package-save') || hasUnresolvedPackageFields() ? 'disabled' : ''}>${isBusy('package-save') ? 'Saving…' : hasUnresolvedPackageFields() ? 'Resolve conflicts to save' : state.packageDirty ? 'Save draft' : 'Draft saved'}</button>
+            <button type="button" class="text-action" data-action="discard-package" ${state.packageDirty && !state.packageOrphan && !packageMutationBusy ? '' : 'disabled'}>Discard edits</button>
+            <button type="submit" ${packageMutationBusy || hasUnresolvedPackageFields() || state.packageOrphan ? 'disabled' : ''}>${isBusy('package-save') ? 'Saving…' : state.packageOrphan ? 'Resolve held edits first' : hasUnresolvedPackageFields() ? 'Resolve conflicts to save' : state.packageDirty ? 'Save draft' : 'Draft saved'}</button>
           </div>
           ${isApprovalArmed ? `
             <section class="approval-checkpoint" aria-labelledby="approvalCheckpointTitle">
@@ -602,11 +865,11 @@ function packageStationMarkup() {
               </dl>
               <p>${state.packageDirty ? 'Your unsaved edits will be saved first. ' : ''}Confirmation records an append-only owner event and makes this exact version immutable. It marks the package ready; it does not execute or change the repository.</p>
               <div class="approval-confirm-actions">
-                <button type="button" class="text-action" data-action="cancel-approval">Continue reviewing</button>
-                <button type="button" class="approval-action" data-action="confirm-approval" data-version-id="${escapeHtml(selected.id)}" ${isBusy('package-approve') || hasUnresolvedPackageFields() ? 'disabled' : ''}>${isBusy('package-approve') ? 'Recording approval…' : hasUnresolvedPackageFields() ? 'Resolve conflicts first' : `Confirm approval of v${selected.versionNumber}`} ${icon('arrow')}</button>
+                <button type="button" class="text-action" data-action="cancel-approval" ${packageMutationBusy ? 'disabled' : ''}>Continue reviewing</button>
+                <button type="button" class="approval-action" data-action="confirm-approval" data-version-id="${escapeHtml(selected.id)}" ${packageMutationBusy || hasUnresolvedPackageFields() || state.packageOrphan ? 'disabled' : ''}>${isBusy('package-approve') ? 'Recording approval…' : state.packageOrphan ? 'Resolve held edits first' : hasUnresolvedPackageFields() ? 'Resolve conflicts first' : `Confirm approval of v${selected.versionNumber}`} ${icon('arrow')}</button>
               </div>
             </section>` : `
-            <button type="button" class="approval-action" data-action="review-approval" data-version-id="${escapeHtml(selected.id)}" ${isBusy('package-approve') || hasUnresolvedPackageFields() ? 'disabled' : ''}>${hasUnresolvedPackageFields() ? 'Resolve conflicts before approval' : `Review approval of v${selected.versionNumber}`} ${icon('arrow')}</button>
+            <button type="button" class="approval-action" data-action="review-approval" data-version-id="${escapeHtml(selected.id)}" ${packageMutationBusy || hasUnresolvedPackageFields() || state.packageOrphan ? 'disabled' : ''}>${state.packageOrphan ? 'Resolve held edits before approval' : hasUnresolvedPackageFields() ? 'Resolve conflicts before approval' : `Review approval of v${selected.versionNumber}`} ${icon('arrow')}</button>
             <p class="lineage-footnote">Review the exact version, owner, completeness, and source lineage before recording approval. Approval never starts execution.</p>`}
         </div>
       </form>`
@@ -621,7 +884,7 @@ function packageStationMarkup() {
         <div class="owner-seal" aria-hidden="true"><span>Owner authority</span><strong>A</strong><span>Andamento</span></div>
         <p class="lineage-footnote">Approved by ${escapeHtml(approval?.ownerDisplayName || 'Owner')} · ${escapeHtml(formatDate(approval?.occurredAt || selected.approvedAt))} · ${selected.sourcePointIds.length} source point${selected.sourcePointIds.length === 1 ? '' : 's'}</p>
         ${selected.id === workPackage.currentVersion.id && !versions.some(version => version.status === 'DRAFT')
-          ? `<button type="button" class="primary-action" data-action="next-version" data-version-id="${escapeHtml(selected.id)}">Create version ${selected.versionNumber + 1} draft</button>` : ''}
+          ? `<button type="button" class="primary-action" data-action="next-version" data-version-id="${escapeHtml(selected.id)}" ${packageMutationBusy ? 'disabled' : ''}>Create version ${selected.versionNumber + 1} draft</button>` : ''}
       </div>`;
 
   return `
@@ -633,6 +896,7 @@ function packageStationMarkup() {
       <div class="package-scroll">
         <article class="package-sheet" data-status="${escapeHtml(selected.status)}">
           <div class="package-title-line"><h3>Planning loop package</h3><div class="package-version">v${selected.versionNumber}<br>${escapeHtml(selected.status)}</div></div>
+          ${packageOrphanMarkup(workPackage.currentVersion)}
           ${body}
         </article>
       </div>
@@ -757,7 +1021,13 @@ function renderWorkspace({ keepFocus = false } = {}) {
     </div>`;
   applyResponsiveStationVisibility();
   restoreStationScroll(scrollSnapshot);
-  if (keepFocus) restoreFocusedControl(focusSnapshot);
+  const focusOrphanRecovery = state.packageOrphanFocusPending
+    && keepFocus
+    && (focusSnapshot?.id.startsWith('package-') || focusSnapshot?.id.startsWith('resolve-package-'));
+  state.packageOrphanFocusPending = false;
+  if (focusOrphanRecovery) {
+    document.querySelector('.package-orphan [data-action="carry-orphan-package"]')?.focus({ preventScroll: true });
+  } else if (keepFocus) restoreFocusedControl(focusSnapshot);
   else app.focus({ preventScroll: true });
   schedulePoll();
 }
@@ -765,6 +1035,7 @@ function renderWorkspace({ keepFocus = false } = {}) {
 function render() {
   renderHeader();
   if (state.phase === 'loading') renderLoading();
+  else if (state.phase === 'bootstrap-error') renderBootstrapError();
   else if (state.phase === 'new-project') renderNewProject();
   else if (state.phase === 'project') renderProjectRegister();
   else if (state.phase === 'workspace') renderWorkspace();
@@ -781,8 +1052,10 @@ function parseRoute() {
 }
 
 function resetWorkspaceTransient() {
+  releasePendingRefreshOperations(state.discussionId);
   state.composerMode = 'owner';
   state.composerDraft = { content: '', displayName: 'Claude', provider: 'Anthropic', model: '' };
+  state.composerRevision += 1;
   state.captureMessageId = '';
   state.editPointId = '';
   state.captureDrafts = {};
@@ -793,9 +1066,59 @@ function resetWorkspaceTransient() {
   state.packageDraftVersionId = '';
   state.packageDirty = false;
   state.packageConflict = null;
+  state.packageOrphan = null;
+  state.packageOrphanFocusPending = false;
   state.approvalArmedVersionId = '';
   state.viewedVersionId = '';
-  state.mutationKeys.clear();
+  state.pollFailureCount = 0;
+  state.pollOutageActive = false;
+}
+
+function consumePendingDraftRecoveries(projectId, discussionId = '') {
+  const matching = [];
+  for (const [slot, recoveries] of state.pendingDraftRecoveries) {
+    for (const [fingerprint, recovery] of recoveries) {
+      if (recovery.projectId === projectId && (recovery.discussionId || '') === discussionId) {
+        matching.push({ slot, fingerprint, recovery });
+      }
+    }
+  }
+  if (!matching.length) return false;
+  const latestByType = new Map();
+  for (const item of matching) {
+    const prior = latestByType.get(item.recovery.type);
+    if (!prior || item.recovery.sequence > prior.recovery.sequence) latestByType.set(item.recovery.type, item);
+  }
+  for (const item of matching) {
+    const recoveries = state.pendingDraftRecoveries.get(item.slot);
+    recoveries?.delete(item.fingerprint);
+    if (!recoveries?.size) state.pendingDraftRecoveries.delete(item.slot);
+  }
+  for (const { recovery } of latestByType.values()) {
+    if (recovery.type === 'discussion') {
+      state.discussionDraft = { title: recovery.title };
+    } else if (recovery.type === 'message') {
+      state.composerMode = recovery.mode;
+      state.composerDraft = { ...recovery.draft };
+      state.composerRevision += 1;
+    } else if (recovery.type === 'capture') {
+      state.captureDrafts[recovery.messageId] = { ...recovery.draft };
+      state.captureMessageId = recovery.messageId;
+    } else if (recovery.type === 'replacement') {
+      state.replacementDrafts[recovery.pointId] = { ...recovery.draft };
+      state.editPointId = recovery.pointId;
+    } else if (recovery.type === 'package') {
+      state.packageDraft = { ...recovery.draft };
+      state.packageBase = { ...recovery.base };
+      state.packageBaseRowVersion = recovery.baseRowVersion;
+      state.packageDraftVersionId = recovery.versionId;
+      state.packageDirty = true;
+      state.packageConflict = recovery.conflict ? structuredClone(recovery.conflict) : null;
+      state.viewedVersionId = recovery.versionId;
+    }
+  }
+  announce('Your pending input was restored after returning to this work context.');
+  return true;
 }
 
 function detailFingerprint(detail) {
@@ -805,18 +1128,36 @@ function detailFingerprint(detail) {
     points: detail.points.map(point => [point.id, point.disposition, point.rowVersion]),
     versions: detail.workPackage?.versions.map(version => [version.id, version.status, version.rowVersion]) || [],
     approvals: detail.workPackage?.approvals.map(approval => approval.id) || [],
+    codexAvailability: [
+      Boolean(detail.agentAvailability?.codex?.blocked),
+      detail.agentAvailability?.codex?.reason || '',
+    ],
   });
+}
+
+async function requestBootstrap() {
+  const requestSequence = ++state.bootstrapRequestSequence;
+  try {
+    const bootstrap = await api('/api/bootstrap');
+    if (requestSequence !== state.bootstrapRequestSequence) return null;
+    return bootstrap;
+  } catch (error) {
+    if (requestSequence !== state.bootstrapRequestSequence) return null;
+    throw error;
+  }
 }
 
 async function loadBootstrap() {
   state.phase = 'loading';
   render();
   try {
-    state.bootstrap = await api('/api/bootstrap');
+    const bootstrap = await requestBootstrap();
+    if (!bootstrap) return;
+    state.bootstrap = bootstrap;
     state.projects = state.bootstrap.projects;
     await syncRoute();
   } catch (error) {
-    state.phase = 'new-project';
+    state.phase = 'bootstrap-error';
     setFeedback(error.message, 'error');
     render();
   }
@@ -825,10 +1166,22 @@ async function loadBootstrap() {
 async function syncRoute() {
   const generation = ++state.routeGeneration;
   clearTimeout(state.pollTimer);
+  if (state.phase === 'loading' && !state.bootstrap) {
+    render();
+    return;
+  }
+  if (state.phase === 'bootstrap-error' && !state.bootstrap) {
+    render();
+    return;
+  }
   const route = parseRoute();
   const nextDiscussionId = route.name === 'discussion' ? route.discussionId : '';
   const nextProjectId = ['project', 'discussion'].includes(route.name) ? route.projectId : state.projectId;
-  if (state.discussionId && state.discussionId !== nextDiscussionId) resetWorkspaceTransient();
+  const leavesWorkspace = state.discussionId && (
+    state.discussionId !== nextDiscussionId
+    || (nextProjectId && state.projectId && state.projectId !== nextProjectId)
+  );
+  if (leavesWorkspace) resetWorkspaceTransient();
   if (state.projectId && nextProjectId && state.projectId !== nextProjectId) state.discussionDraft = { title: '' };
   clearFeedback();
   if (route.name === 'new-project' || !state.projects.length) {
@@ -849,31 +1202,45 @@ async function syncRoute() {
     location.replace(`#/projects/${state.projects[0].id}`);
     return;
   }
+  const projectChanged = state.projectId !== project.id;
+  const discussionChanged = state.discussionId !== nextDiscussionId;
   state.projectId = project.id;
+  state.discussionId = nextDiscussionId;
+  if (projectChanged) state.discussions = [];
+  if (projectChanged) state.discussionListUnavailable = false;
+  if (projectChanged || discussionChanged) state.detail = null;
+  if (route.name === 'project') state.discussions = [];
+  if (route.name === 'project') state.discussionListUnavailable = false;
   state.phase = 'loading';
   render();
   if (route.name === 'project') {
-    state.discussionId = '';
-    state.detail = null;
     try {
       const result = await api(`/api/projects/${encodeURIComponent(project.id)}/discussions`);
       if (generation !== state.routeGeneration) return;
       state.discussions = result.discussions;
+      state.discussionListUnavailable = false;
       state.phase = 'project';
       render();
     } catch (error) {
+      if (generation !== state.routeGeneration) return;
       setFeedback(error.message, 'error', error.details);
+      state.discussions = [];
+      state.discussionListUnavailable = true;
       state.phase = 'project';
       render();
     }
     return;
   }
-  state.discussionId = route.discussionId;
   try {
     const detail = await api(`/api/discussions/${encodeURIComponent(route.discussionId)}`);
     if (generation !== state.routeGeneration) return;
-    if (detail.project.id !== project.id) throw new ApiError(404, { error: { code: 'NOT_FOUND', message: 'That planning room does not belong to this project.' } });
+    if (detail.project.id !== project.id) {
+      resetWorkspaceTransient();
+      throw new ApiError(404, { error: { code: 'NOT_FOUND', message: 'That planning room does not belong to this project.' } });
+    }
     state.detail = detail;
+    state.discussionListUnavailable = false;
+    clearPollOutage();
     state.phase = 'workspace';
     state.captureMessageId = '';
     state.editPointId = '';
@@ -886,43 +1253,149 @@ async function syncRoute() {
     state.phase = 'project';
     state.discussionId = '';
     state.detail = null;
-    const fallback = await api(`/api/projects/${encodeURIComponent(project.id)}/discussions`);
-    if (generation !== state.routeGeneration) return;
-    state.discussions = fallback.discussions;
+    state.discussions = [];
+    try {
+      const fallback = await api(`/api/projects/${encodeURIComponent(project.id)}/discussions`);
+      if (generation !== state.routeGeneration) return;
+      state.discussions = fallback.discussions;
+      state.discussionListUnavailable = false;
+    } catch {
+      if (generation !== state.routeGeneration) return;
+      state.discussionListUnavailable = true;
+      setFeedback('The planning room and this project’s room list could not be loaded.', 'error');
+    }
     render();
   }
 }
 
 async function refreshDiscussion({ keepFocus = true } = {}) {
   const discussionId = state.discussionId;
-  if (!discussionId) return;
-  const detail = await api(`/api/discussions/${encodeURIComponent(discussionId)}`);
-  if (state.discussionId !== discussionId || state.phase !== 'workspace') return;
-  state.detail = detail;
-  renderHeader();
-  renderWorkspace({ keepFocus });
+  const routeGeneration = state.routeGeneration;
+  if (!discussionId || state.phase !== 'workspace') return false;
+  clearTimeout(state.pollTimer);
+  const requestSequence = ++state.detailRequestSequence;
+  const isCurrentRequest = () => (
+    state.discussionId === discussionId
+    && state.phase === 'workspace'
+    && state.routeGeneration === routeGeneration
+    && state.detailRequestSequence === requestSequence
+  );
+  try {
+    const detail = await api(`/api/discussions/${encodeURIComponent(discussionId)}`);
+    if (!isCurrentRequest()) return false;
+    state.detail = detail;
+    clearPollOutage({ announceRecovery: true });
+    renderHeader();
+    renderWorkspace({ keepFocus });
+    return true;
+  } catch (error) {
+    if (!isCurrentRequest()) return false;
+    throw error;
+  }
 }
 
 function schedulePoll() {
   clearTimeout(state.pollTimer);
-  if (state.phase !== 'workspace' || !state.detail?.runs.some(run => run.status === 'RUNNING')) return;
+  if (state.phase !== 'workspace') return;
   const discussionId = state.discussionId;
+  const routeGeneration = state.routeGeneration;
+  const delayMs = Math.min(450 * (2 ** Math.min(state.pollFailureCount, 5)), 8000);
   state.pollTimer = setTimeout(async () => {
+    if (
+      state.discussionId !== discussionId
+      || state.phase !== 'workspace'
+      || state.routeGeneration !== routeGeneration
+    ) return;
+    const requestSequence = ++state.detailRequestSequence;
     try {
       const priorFingerprint = detailFingerprint(state.detail);
       const detail = await api(`/api/discussions/${encodeURIComponent(discussionId)}`);
-      if (state.discussionId !== discussionId || state.phase !== 'workspace') return;
+      if (
+        state.discussionId !== discussionId
+        || state.phase !== 'workspace'
+        || state.routeGeneration !== routeGeneration
+        || state.detailRequestSequence !== requestSequence
+      ) return;
       const changed = detailFingerprint(detail) !== priorFingerprint;
-      if (changed || !detail.runs.some(run => run.status === 'RUNNING')) {
+      const recovered = state.pollOutageActive;
+      clearPollOutage({ announceRecovery: recovered });
+      if (changed || recovered) {
         state.detail = detail;
         renderHeader();
         renderWorkspace({ keepFocus: true });
       } else schedulePoll();
     } catch (error) {
-      setFeedback(error.message, 'error', error.details);
-      renderWorkspace({ keepFocus: true });
+      if (
+        state.discussionId !== discussionId
+        || state.phase !== 'workspace'
+        || state.routeGeneration !== routeGeneration
+        || state.detailRequestSequence !== requestSequence
+      ) return;
+      state.pollFailureCount += 1;
+      if (!state.pollOutageActive) {
+        state.pollOutageActive = true;
+        if (!state.feedback || ['poll', 'refresh'].includes(state.feedback.source)) {
+          setFeedback(
+            'Live updates are paused while Andamento reconnects to the local service.',
+            'error',
+            undefined,
+            'poll',
+          );
+          renderHeader();
+          renderWorkspace({ keepFocus: true });
+        } else schedulePoll();
+      } else schedulePoll();
     }
-  }, 450);
+  }, delayMs);
+}
+
+function renderAfterDetachedMutation() {
+  if (state.phase === 'workspace') {
+    renderHeader();
+    renderWorkspace({ keepFocus: true });
+  } else render();
+}
+
+function reportDisplayRefreshFailure({ committed = false } = {}) {
+  state.pollFailureCount = Math.max(1, state.pollFailureCount + 1);
+  state.pollOutageActive = true;
+  setFeedback(
+    committed
+      ? 'The action was saved locally, but the latest view could not refresh. Andamento will keep retrying.'
+      : 'The latest saved state could not refresh. Andamento will keep retrying.',
+    'error',
+    undefined,
+    'refresh',
+  );
+  renderAfterDetachedMutation();
+}
+
+async function refreshAfterCommittedMutation({
+  operationSlot = '',
+  discussionId,
+  routeGeneration,
+  keepFocus = true,
+} = {}) {
+  const boundDiscussionId = discussionId || state.discussionId;
+  const boundRouteGeneration = routeGeneration ?? state.routeGeneration;
+  const isCurrentContext = () => state.phase === 'workspace'
+    && state.discussionId === boundDiscussionId
+    && state.routeGeneration === boundRouteGeneration;
+  try {
+    const applied = await refreshDiscussion({ keepFocus });
+    if (applied || !isCurrentContext()) clearOperation(operationSlot);
+    else holdOperationUntilRefresh(operationSlot, boundDiscussionId);
+    return applied;
+  } catch {
+    if (!isCurrentContext()) {
+      clearOperation(operationSlot);
+      renderAfterDetachedMutation();
+      return false;
+    }
+    holdOperationUntilRefresh(operationSlot, boundDiscussionId);
+    reportDisplayRefreshFailure({ committed: true });
+    return false;
+  }
 }
 
 async function withMutation(key, callback, {
@@ -930,99 +1403,208 @@ async function withMutation(key, callback, {
   successMessage = '',
   operationSlot = '',
   contextDiscussionId = undefined,
+  contextRouteGeneration = undefined,
+  contextProjectId = undefined,
   allowDetachedResult = false,
+  unconfirmedSource = 'unconfirmed-mutation',
 } = {}) {
   if (isBusy(key)) return null;
   const boundDiscussionId = contextDiscussionId === undefined && state.phase === 'workspace'
     ? state.discussionId : contextDiscussionId;
-  const isCurrentContext = () => !boundDiscussionId
-    || (state.phase === 'workspace' && state.discussionId === boundDiscussionId);
+  const boundRouteGeneration = contextRouteGeneration === undefined && boundDiscussionId
+    ? state.routeGeneration : contextRouteGeneration;
+  const isCurrentContext = () => (
+    (!boundDiscussionId || (state.phase === 'workspace' && state.discussionId === boundDiscussionId))
+    && (boundRouteGeneration === undefined || state.routeGeneration === boundRouteGeneration)
+    && (contextProjectId === undefined || state.projectId === contextProjectId)
+  );
   setBusy(key, true);
   clearFeedback();
   if (state.phase === 'workspace') {
     renderHeader();
     renderWorkspace({ keepFocus: true });
   } else render();
+  let result;
   try {
-    const result = await callback();
-    completeOperation(operationSlot);
-    setBusy(key, false);
-    if (!isCurrentContext() && !allowDetachedResult) {
-      announce('The action finished in the planning room you left.');
-      return null;
-    }
-    if (successMessage && isCurrentContext()) announce(successMessage);
-    if (refresh && isCurrentContext()) await refreshDiscussion();
-    return result;
+    result = await callback();
+    state.detailRequestSequence += 1;
   } catch (error) {
+    state.detailRequestSequence += 1;
     setBusy(key, false);
     if (!isCurrentContext()) {
-      announce('An action in the planning room you left did not complete.', true);
+      renderAfterDetachedMutation();
+      announce('The outcome of an action in the planning room you left could not be confirmed.', true);
       return null;
     }
-    setFeedback(error.message, 'error', error.details);
-    if (state.phase === 'workspace') renderWorkspace({ keepFocus: true });
+    setFeedback(
+      error.message,
+      'error',
+      error.details,
+      error.code === 'REQUEST_UNCONFIRMED' ? unconfirmedSource : 'action',
+    );
+    if (state.phase === 'workspace') {
+      renderHeader();
+      renderWorkspace({ keepFocus: true });
+    }
     else render();
     return null;
   }
+  setBusy(key, false);
+  if (!isCurrentContext()) {
+    clearOperation(operationSlot);
+    renderAfterDetachedMutation();
+    if (!allowDetachedResult) {
+      announce('The action finished in the planning room you left.');
+      return null;
+    }
+  }
+  if (successMessage && isCurrentContext()) announce(successMessage);
+  if (!refresh || !isCurrentContext()) return result;
+  try {
+    const applied = await refreshDiscussion();
+    if (!isCurrentContext()) {
+      clearOperation(operationSlot);
+      renderAfterDetachedMutation();
+      announce('The action finished in the planning room you left.');
+      return allowDetachedResult ? result : null;
+    }
+    if (applied) clearOperation(operationSlot);
+    else holdOperationUntilRefresh(operationSlot, boundDiscussionId);
+  } catch {
+    if (!isCurrentContext()) {
+      clearOperation(operationSlot);
+      renderAfterDetachedMutation();
+      return allowDetachedResult ? result : null;
+    }
+    holdOperationUntilRefresh(operationSlot, boundDiscussionId);
+    reportDisplayRefreshFailure({ committed: true });
+  }
+  return result;
 }
 
 async function submitProject(form) {
   if (!form.reportValidity()) return;
   const data = new FormData(form);
+  const submissionGeneration = state.routeGeneration;
   const operationSlot = 'project-submit';
-  const values = { name: data.get('name'), repositoryRoot: data.get('repositoryRoot'), idempotencyKey: operationKey(operationSlot, 'project') };
-  const result = await withMutation('project', () => api('/api/projects', { method: 'POST', body: values }), { refresh: false, successMessage: 'Project registered locally.', operationSlot });
+  const target = '/api/projects';
+  const payload = { name: data.get('name'), repositoryRoot: data.get('repositoryRoot') };
+  const result = await withMutation('project', () => api(target, {
+    method: 'POST',
+    body: { ...payload, idempotencyKey: operationKey(operationSlot, 'project', { target, payload }) },
+  }), {
+    refresh: false,
+    successMessage: 'Project registered locally.',
+    operationSlot,
+    contextRouteGeneration: submissionGeneration,
+    allowDetachedResult: true,
+  });
   if (!result) return;
+  clearOperation(operationSlot);
   state.projectDraft = { name: '', repositoryRoot: '' };
-  state.bootstrap = await api('/api/bootstrap');
-  state.projects = state.bootstrap.projects;
+  state.projects = [...state.projects.filter(project => project.id !== result.project.id), result.project];
+  if (state.bootstrap) state.bootstrap.projects = state.projects;
+  if (state.routeGeneration !== submissionGeneration) {
+    renderAfterDetachedMutation();
+    announce('The project was registered locally and added to the project selector.');
+    return;
+  }
+  let bootstrap;
+  try {
+    bootstrap = await requestBootstrap();
+  } catch {
+    if (state.routeGeneration !== submissionGeneration) return;
+    announce('Project registered locally. The project list refresh was interrupted; opening the saved project.', true);
+    location.hash = `#/projects/${result.project.id}`;
+    return;
+  }
+  if (!bootstrap || state.routeGeneration !== submissionGeneration) return;
+  state.bootstrap = bootstrap;
+  state.projects = bootstrap.projects;
   location.hash = `#/projects/${result.project.id}`;
 }
 
 async function submitDiscussion(form) {
+  if (state.discussionListUnavailable) return;
   if (!form.reportValidity()) return;
   const title = new FormData(form).get('title');
-  const operationSlot = `discussion:${state.projectId}`;
-  const result = await withMutation('discussion', () => api(`/api/projects/${encodeURIComponent(state.projectId)}/discussions`, {
-    method: 'POST', body: { title, idempotencyKey: operationKey(operationSlot, 'discussion') },
-  }), { refresh: false, successMessage: 'Planning room opened.', operationSlot });
+  const projectId = state.projectId;
+  const submissionGeneration = state.routeGeneration;
+  const operationSlot = `discussion:${projectId}`;
+  const target = `/api/projects/${encodeURIComponent(projectId)}/discussions`;
+  const payload = { title };
+  const result = await withMutation('discussion', () => api(target, {
+    method: 'POST', body: { ...payload, idempotencyKey: operationKey(operationSlot, 'discussion', { target, payload }) },
+  }), {
+    refresh: false,
+    successMessage: 'Planning room opened.',
+    operationSlot,
+    contextRouteGeneration: submissionGeneration,
+    contextProjectId: projectId,
+  });
   if (result) {
+    clearOperation(operationSlot);
+    if (state.routeGeneration !== submissionGeneration || state.projectId !== projectId) return;
     state.discussionDraft = { title: '' };
-    location.hash = `#/projects/${state.projectId}/discussions/${result.discussion.id}`;
+    location.hash = `#/projects/${projectId}/discussions/${result.discussion.id}`;
   }
 }
 
 async function submitMessage(form) {
+  const mode = state.composerMode;
+  const codexAvailability = state.detail?.agentAvailability?.codex;
+  if (mode === 'codex' && codexAvailability?.blocked) {
+    setFeedback(codexAvailability.reason || 'Codex is blocked in this planning room.', 'error');
+    renderWorkspace({ keepFocus: true });
+    return;
+  }
   if (!form.reportValidity()) return;
   const data = new FormData(form);
   const content = data.get('content');
-  const mode = state.composerMode;
+  const discussionId = state.discussionId;
+  const submissionGeneration = state.routeGeneration;
+  const submittedRevision = state.composerRevision;
   const key = 'message';
-  const operationSlot = `message:${state.discussionId}:${mode}`;
+  const operationSlot = `message:${discussionId}:${mode}`;
   let request;
   if (mode === 'owner' || mode === 'imported') {
-    request = () => api(`/api/discussions/${encodeURIComponent(state.discussionId)}/messages`, {
+    const target = `/api/discussions/${encodeURIComponent(discussionId)}/messages`;
+    const payload = {
+      contributionType: mode === 'owner' ? 'OWNER' : 'IMPORTED',
+      content,
+      displayName: data.get('displayName'),
+      provider: data.get('provider'),
+      model: data.get('model'),
+    };
+    request = () => api(target, {
       method: 'POST',
-      body: {
-        contributionType: mode === 'owner' ? 'OWNER' : 'IMPORTED',
-        content,
-        displayName: data.get('displayName'),
-        provider: data.get('provider'),
-        model: data.get('model'),
-        idempotencyKey: operationKey(operationSlot, 'message'),
-      },
+      body: { ...payload, idempotencyKey: operationKey(operationSlot, 'message', { target, payload }) },
     });
   } else {
-    request = () => api(`/api/discussions/${encodeURIComponent(state.discussionId)}/agent-runs`, {
+    const target = `/api/discussions/${encodeURIComponent(discussionId)}/agent-runs`;
+    const payload = { adapter: mode, prompt: content };
+    request = () => api(target, {
       method: 'POST',
-      body: { adapter: mode, prompt: content, idempotencyKey: operationKey(operationSlot, 'agent-run') },
+      body: { ...payload, idempotencyKey: operationKey(operationSlot, 'agent-run', { target, payload }) },
     });
   }
-  const result = await withMutation(key, request, { refresh: false, successMessage: mode === 'owner' || mode === 'imported' ? 'Contribution added.' : 'Planning participant started.', operationSlot });
+  const result = await withMutation(key, request, {
+    refresh: false,
+    successMessage: mode === 'owner' || mode === 'imported' ? 'Contribution added.' : 'Planning participant started.',
+    operationSlot,
+    contextDiscussionId: discussionId,
+  });
   if (result) {
-    state.composerDraft = { content: '', displayName: 'Claude', provider: 'Anthropic', model: '' };
-    await refreshDiscussion();
+    clearOperation(operationSlot);
+    if (
+      state.discussionId === discussionId
+      && state.composerMode === mode
+      && state.composerRevision === submittedRevision
+    ) {
+      state.composerDraft = { content: '', displayName: 'Claude', provider: 'Anthropic', model: '' };
+      state.composerRevision += 1;
+    }
+    await refreshAfterCommittedMutation({ discussionId, routeGeneration: submissionGeneration });
   }
 }
 
@@ -1032,14 +1614,17 @@ async function submitCapture(form) {
   const messageId = form.dataset.messageId;
   const key = `capture:${messageId}`;
   const operationSlot = `capture:${messageId}`;
-  const result = await withMutation(key, () => api(`/api/messages/${encodeURIComponent(messageId)}/planning-points`, {
+  const target = `/api/messages/${encodeURIComponent(messageId)}/planning-points`;
+  const payload = { pointType: data.get('pointType'), text: data.get('text') };
+  const result = await withMutation(key, () => api(target, {
     method: 'POST',
-    body: { pointType: data.get('pointType'), text: data.get('text'), idempotencyKey: operationKey(operationSlot, 'point') },
+    body: { ...payload, idempotencyKey: operationKey(operationSlot, 'point', { target, payload }) },
   }), { refresh: false, successMessage: 'Planning point proposed for owner decision.', operationSlot });
   if (result) {
-    state.captureMessageId = '';
+    clearOperation(operationSlot);
     delete state.captureDrafts[messageId];
-    await refreshDiscussion();
+    if (state.captureMessageId === messageId) state.captureMessageId = '';
+    await refreshAfterCommittedMutation();
   }
 }
 
@@ -1047,20 +1632,23 @@ async function submitReplacement(form) {
   if (!form.reportValidity()) return;
   const data = new FormData(form);
   const pointId = form.dataset.pointId;
+  if (isBusy(`point:${pointId}`) || isBusy(`replace:${pointId}`)) return;
   const operationSlot = `replace:${pointId}`;
-  const result = await withMutation(`replace:${pointId}`, () => api(`/api/planning-points/${encodeURIComponent(pointId)}/replacement`, {
+  const target = `/api/planning-points/${encodeURIComponent(pointId)}/replacement`;
+  const payload = {
+    pointType: data.get('pointType'),
+    text: data.get('text'),
+    expectedVersion: Number(form.dataset.version),
+  };
+  const result = await withMutation(`replace:${pointId}`, () => api(target, {
     method: 'POST',
-    body: {
-      pointType: data.get('pointType'),
-      text: data.get('text'),
-      expectedVersion: Number(form.dataset.version),
-      idempotencyKey: operationKey(operationSlot, 'point-replacement'),
-    },
+    body: { ...payload, idempotencyKey: operationKey(operationSlot, 'point-replacement', { target, payload }) },
   }), { refresh: false, successMessage: 'Replacement proposal created; the earlier proposal remains in history.', operationSlot });
   if (result) {
-    state.editPointId = '';
+    clearOperation(operationSlot);
     delete state.replacementDrafts[pointId];
-    await refreshDiscussion();
+    if (state.editPointId === pointId) state.editPointId = '';
+    await refreshAfterCommittedMutation();
   }
 }
 
@@ -1079,6 +1667,7 @@ async function savePackage({ refresh = true } = {}) {
   const current = state.detail.workPackage?.currentVersion;
   if (!current || current.status !== 'DRAFT') return null;
   const discussionId = state.discussionId;
+  const submissionGeneration = state.routeGeneration;
   const versionId = current.id;
   const draftSnapshot = { ...state.packageDraft };
   disarmApproval();
@@ -1089,23 +1678,57 @@ async function savePackage({ refresh = true } = {}) {
   }
   const expected = state.packageBaseRowVersion;
   const operationSlot = `package-save:${current.id}`;
-  const result = await withMutation('package-save', () => api(`/api/work-package-versions/${encodeURIComponent(current.id)}`, {
+  const target = `/api/work-package-versions/${encodeURIComponent(current.id)}`;
+  const payload = { content: contentFromPackageDraft(draftSnapshot), expectedVersion: expected };
+  const result = await withMutation('package-save', () => api(target, {
     method: 'PUT',
-    body: { content: contentFromPackageDraft(draftSnapshot), expectedVersion: expected, idempotencyKey: operationKey(operationSlot, 'package-save') },
-  }), { refresh: false, operationSlot, contextDiscussionId: discussionId, allowDetachedResult: true });
+    body: { ...payload, idempotencyKey: operationKey(operationSlot, 'package-save', { method: 'PUT', target, payload }) },
+  }), {
+    refresh: false,
+    operationSlot,
+    contextDiscussionId: discussionId,
+    contextRouteGeneration: submissionGeneration,
+    allowDetachedResult: true,
+  });
+  const sameRoute = state.phase === 'workspace'
+    && state.discussionId === discussionId
+    && state.routeGeneration === submissionGeneration;
   if (!result) {
-    if (state.discussionId === discussionId && state.feedback?.details?.current) {
-      const current = state.feedback.details.current;
-      applyPackageVersionToDetail(current);
-      state.packageConflict = { message: state.feedback.message, current };
+    if (sameRoute && state.feedback?.details?.current) {
+      const conflictCurrent = state.feedback.details.current;
+      const conflictMessage = state.feedback.message;
+      clearFeedback();
+      if (state.detail.workPackage?.currentVersion?.id === versionId) {
+        applyPackageVersionToDetail(conflictCurrent);
+        state.packageConflict = { message: conflictMessage, current: conflictCurrent };
+      } else if (!state.packageOrphan) {
+        setFeedback('The save stopped because a newer package version is current.', 'error');
+      }
+      renderHeader();
       renderWorkspace({ keepFocus: true });
+      if (state.packageOrphan) announce('The package advanced while saving. Your edits remain held for explicit recovery.', true);
     }
     return null;
   }
-  const contextCurrent = state.phase === 'workspace'
-    && state.discussionId === discussionId
+  clearOperation(operationSlot);
+  const contextCurrent = sameRoute
     && state.detail.workPackage?.currentVersion?.id === versionId;
-  if (!contextCurrent) return { version: result.version, contextCurrent: false };
+  if (!contextCurrent) {
+    if (sameRoute) {
+      const savedDraft = draftFromPackageContent(result.version.content);
+      if (
+        state.packageOrphan?.sourceVersionId === versionId
+        && packageDraftsEqual(normalizedPackageDraft(state.packageOrphan.draft), savedDraft)
+      ) {
+        state.packageOrphan = null;
+        state.packageOrphanFocusPending = false;
+        announce(`Your package edits were saved in v${result.version.versionNumber}; a newer version is now current.`);
+      }
+      renderHeader();
+      renderWorkspace({ keepFocus: true });
+    }
+    return { version: result.version, contextCurrent: false };
+  }
   applyPackageVersionToDetail(result.version);
   state.packageDirty = false;
   state.packageDraft = { ...draftSnapshot };
@@ -1113,8 +1736,56 @@ async function savePackage({ refresh = true } = {}) {
   state.packageBaseRowVersion = result.version.rowVersion;
   state.packageConflict = null;
   announce('Package draft saved locally.');
-  if (refresh) await refreshDiscussion();
-  return { version: result.version, contextCurrent: true };
+  renderHeader();
+  renderWorkspace({ keepFocus: true });
+  let displayRefreshed = true;
+  if (refresh) {
+    displayRefreshed = await refreshAfterCommittedMutation({ discussionId, routeGeneration: submissionGeneration });
+  }
+  return { version: result.version, contextCurrent: true, displayRefreshed };
+}
+
+async function carryOrphanedPackageDraft() {
+  const orphan = state.packageOrphan;
+  let current = state.detail?.workPackage?.currentVersion;
+  if (!orphan || !current) return;
+  if (current.status !== 'DRAFT') {
+    const discussionId = state.discussionId;
+    const operationSlot = `carry-next-version:${current.id}`;
+    const target = `/api/work-package-versions/${encodeURIComponent(current.id)}/next-version`;
+    const payload = {};
+    const result = await withMutation('carry-package', () => api(target, {
+      method: 'POST',
+      body: { idempotencyKey: operationKey(operationSlot, 'package-next', { target, payload }) },
+    }), {
+      refresh: false,
+      operationSlot,
+      contextDiscussionId: discussionId,
+    });
+    if (!result || state.packageOrphan !== orphan) return;
+    state.viewedVersionId = result.version.id;
+    const refreshed = await refreshAfterCommittedMutation({ operationSlot, discussionId });
+    if (!refreshed) return;
+    current = state.detail?.workPackage?.currentVersion;
+  }
+  if (!current || current.status !== 'DRAFT' || state.packageOrphan !== orphan) return;
+  installRebasedPackageDraft({
+    localDraft: orphan.draft,
+    priorBase: orphan.base,
+    current,
+    carried: true,
+  });
+  state.packageOrphan = null;
+  state.packageOrphanFocusPending = false;
+  state.viewedVersionId = current.id;
+  state.rightTab = 'package';
+  renderWorkspace({ keepFocus: true });
+  requestAnimationFrame(() => {
+    const nextAction = document.querySelector('.field-collision [data-action="resolve-package-field"]')
+      || document.querySelector('#package-outcome');
+    nextAction?.focus({ preventScroll: true });
+  });
+  announce(`Held edits are ready for review in package v${current.versionNumber}.`);
 }
 
 async function approvePackage(versionId) {
@@ -1129,15 +1800,33 @@ async function approvePackage(versionId) {
       announce('The draft was saved, but approval stopped because you left the reviewed package.', true);
       return;
     }
-    current = saved.version;
+    if (!saved.displayRefreshed) {
+      announce('The draft was saved, but approval stopped because the latest package state could not be confirmed.', true);
+      return;
+    }
+    const refreshedCurrent = state.detail.workPackage?.currentVersion;
+    if (
+      !refreshedCurrent
+      || refreshedCurrent.id !== versionId
+      || refreshedCurrent.status !== 'DRAFT'
+      || refreshedCurrent.rowVersion !== saved.version.rowVersion
+    ) {
+      announce('The draft was saved, but approval stopped because the reviewed package changed.', true);
+      return;
+    }
+    current = refreshedCurrent;
   }
   if (state.discussionId !== discussionId || current.id !== versionId) return;
   const operationSlot = `package-approve:${current.id}`;
-  const result = await withMutation('package-approve', () => api(`/api/work-package-versions/${encodeURIComponent(current.id)}/approve`, {
+  const target = `/api/work-package-versions/${encodeURIComponent(current.id)}/approve`;
+  const payload = { expectedVersion: current.rowVersion };
+  const result = await withMutation('package-approve', () => api(target, {
     method: 'POST',
-    body: { expectedVersion: current.rowVersion, idempotencyKey: operationKey(operationSlot, 'package-approve') },
+    body: { ...payload, idempotencyKey: operationKey(operationSlot, 'package-approve', { target, payload }) },
   }), { successMessage: 'Package version approved and locked. No execution was dispatched.', operationSlot });
-  if (result) state.viewedVersionId = result.version.id;
+  if (result && state.detail.workPackage?.currentVersion?.id === result.version.id) {
+    state.viewedVersionId = result.version.id;
+  }
 }
 
 function updateDraftFromControl(control) {
@@ -1151,6 +1840,7 @@ function updateDraftFromControl(control) {
   }
   if (form.dataset.form === 'message' && Object.hasOwn(state.composerDraft, control.name)) {
     state.composerDraft[control.name] = control.value;
+    state.composerRevision += 1;
   }
   if (form.dataset.form === 'capture-point') {
     const draft = state.captureDrafts[form.dataset.messageId] || { pointType: 'REQUIREMENT', text: '' };
@@ -1199,27 +1889,53 @@ document.addEventListener('click', event => {
   const button = event.target.closest('[data-action]');
   if (!button) return;
   const action = button.dataset.action;
+  if (isPackageMutationBusy() && [
+    'review-approval',
+    'cancel-approval',
+    'confirm-approval',
+    'discard-package',
+    'retry-package-conflict',
+    'resolve-package-field',
+    'view-version',
+    'carry-orphan-package',
+    'discard-orphan-package',
+    'next-version',
+  ].includes(action)) return;
   if (action === 'new-project') {
+    if (['loading', 'bootstrap-error'].includes(state.phase)) return;
     state.returnProjectId = state.projectId;
     location.hash = '#/new-project';
   }
+  if (action === 'retry-bootstrap') void loadBootstrap();
+  if (action === 'retry-room-list') {
+    const projectHash = `#/projects/${state.projectId}`;
+    if (location.hash === projectHash) void syncRoute();
+    else location.hash = projectHash;
+  }
   if (action === 'cancel-new-project') {
+    if (isBusy('project')) return;
+    clearOperation('project-submit');
     state.projectDraft = { name: '', repositoryRoot: '' };
     const projectId = state.returnProjectId || state.projectId;
     location.hash = projectId ? `#/projects/${projectId}` : '#/';
   }
   if (action === 'composer-mode') {
     state.composerMode = button.dataset.mode;
+    state.composerRevision += 1;
     renderWorkspace({ keepFocus: true });
     requestAnimationFrame(() => document.querySelector('#messageText')?.focus());
   }
   if (action === 'clear-composer') {
+    if (isBusy('message')) return;
+    clearOperationsForPrefix(`message:${state.discussionId}:`);
     state.composerDraft = { content: '', displayName: 'Claude', provider: 'Anthropic', model: '' };
+    state.composerRevision += 1;
     renderWorkspace({ keepFocus: true });
     requestAnimationFrame(() => document.querySelector('#messageText')?.focus());
     announce('Composer cleared.');
   }
   if (action === 'toggle-capture') {
+    if (isBusy(`capture:${button.dataset.messageId}`)) return;
     state.captureMessageId = state.captureMessageId === button.dataset.messageId ? '' : button.dataset.messageId;
     if (state.captureMessageId && !state.captureDrafts[state.captureMessageId]) {
       const message = state.detail.messages.find(item => item.id === state.captureMessageId);
@@ -1229,11 +1945,13 @@ document.addEventListener('click', event => {
     requestAnimationFrame(() => document.querySelector(`#pointText-${CSS.escape(state.captureMessageId)}`)?.focus());
   }
   if (action === 'close-capture') {
+    clearOperation(`capture:${state.captureMessageId}`);
     delete state.captureDrafts[state.captureMessageId];
     state.captureMessageId = '';
     renderWorkspace({ keepFocus: true });
   }
   if (action === 'edit-point') {
+    if (isBusy(`point:${button.dataset.pointId}`) || isBusy(`replace:${button.dataset.pointId}`)) return;
     state.editPointId = button.dataset.pointId;
     if (!state.replacementDrafts[state.editPointId]) {
       const point = state.detail.points.find(item => item.id === state.editPointId);
@@ -1243,39 +1961,62 @@ document.addEventListener('click', event => {
     requestAnimationFrame(() => document.querySelector(`#editText-${CSS.escape(state.editPointId)}`)?.focus());
   }
   if (action === 'cancel-edit-point') {
+    if (isBusy(`point:${state.editPointId}`) || isBusy(`replace:${state.editPointId}`)) return;
+    clearOperation(`replace:${state.editPointId}`);
     delete state.replacementDrafts[state.editPointId];
     state.editPointId = '';
     renderWorkspace({ keepFocus: true });
   }
   if (action === 'disposition') {
     const pointId = button.dataset.pointId;
+    if (isBusy(`point:${pointId}`) || isBusy(`replace:${pointId}`)) return;
     const operationSlot = `disposition:${pointId}`;
-    void withMutation(`point:${pointId}`, () => api(`/api/planning-points/${encodeURIComponent(pointId)}/disposition`, {
+    const target = `/api/planning-points/${encodeURIComponent(pointId)}/disposition`;
+    const payload = { disposition: button.dataset.disposition, expectedVersion: Number(button.dataset.version) };
+    void withMutation(`point:${pointId}`, () => api(target, {
       method: 'POST',
-      body: { disposition: button.dataset.disposition, expectedVersion: Number(button.dataset.version), idempotencyKey: operationKey(operationSlot, 'point-decision') },
+      body: { ...payload, idempotencyKey: operationKey(operationSlot, 'point-decision', { target, payload }) },
     }), { successMessage: `Planning point ${button.dataset.disposition.toLowerCase()}.`, operationSlot });
   }
   if (action === 'retry-run') {
+    if (isBusy(`run:${button.dataset.runId}`)) return;
     const operationSlot = `retry:${button.dataset.runId}`;
-    void withMutation(`run:${button.dataset.runId}`, () => api(`/api/agent-runs/${encodeURIComponent(button.dataset.runId)}/retry`, {
-      method: 'POST', body: { idempotencyKey: operationKey(operationSlot, 'run-retry') },
+    const target = `/api/agent-runs/${encodeURIComponent(button.dataset.runId)}/retry`;
+    const payload = {};
+    void withMutation(`run:${button.dataset.runId}`, () => api(target, {
+      method: 'POST', body: { idempotencyKey: operationKey(operationSlot, 'run-retry', { target, payload }) },
     }), { successMessage: 'Contribution retry started with the preserved prompt.', operationSlot });
   }
   if (action === 'cancel-run') {
+    if (isBusy(`run:${button.dataset.runId}`)) return;
     const operationSlot = `cancel:${button.dataset.runId}`;
-    void withMutation(`run:${button.dataset.runId}`, () => api(`/api/agent-runs/${encodeURIComponent(button.dataset.runId)}/cancel`, {
-      method: 'POST', body: { idempotencyKey: operationKey(operationSlot, 'run-cancel') },
-    }), { successMessage: 'Contribution cancelled; its prompt remains available.', operationSlot });
+    const target = `/api/agent-runs/${encodeURIComponent(button.dataset.runId)}/cancel`;
+    const payload = {};
+    void withMutation(`run:${button.dataset.runId}`, () => api(target, {
+      method: 'POST', body: { idempotencyKey: operationKey(operationSlot, 'run-cancel', { target, payload }) },
+    }), { operationSlot }).then(result => {
+      if (!result) return;
+      if (result.run.errorCode === 'CODEX_CLEANUP_PENDING') {
+        announce('Cancellation requested. Andamento is confirming that the Codex turn stopped.', true);
+      } else if (result.run.errorCode === 'CODEX_CLEANUP_UNCONFIRMED') {
+        announce('Cancellation cleanup could not be confirmed; Codex is blocked in this room.', true);
+      } else {
+        announce('Contribution cancelled; its prompt remains available.');
+      }
+    });
   }
   if (action === 'prepare-package') {
+    if (isBusy('prepare-package')) return;
     const operationSlot = `prepare:${state.discussionId}`;
-    void withMutation('prepare-package', () => api(`/api/discussions/${encodeURIComponent(state.discussionId)}/work-package`, {
-      method: 'POST', body: { idempotencyKey: operationKey(operationSlot, 'package-prepare') },
+    const target = `/api/discussions/${encodeURIComponent(state.discussionId)}/work-package`;
+    const payload = {};
+    void withMutation('prepare-package', () => api(target, {
+      method: 'POST', body: { idempotencyKey: operationKey(operationSlot, 'package-prepare', { target, payload }) },
     }), { refresh: false, successMessage: 'Draft package prepared from accepted points.', operationSlot }).then(async result => {
       if (result) {
         state.viewedVersionId = result.version.id;
         state.rightTab = 'package';
-        await refreshDiscussion();
+        await refreshAfterCommittedMutation({ operationSlot });
       }
     });
   }
@@ -1287,13 +2028,24 @@ document.addEventListener('click', event => {
     requestAnimationFrame(() => document.querySelector('[data-action="confirm-approval"]')?.focus());
   }
   if (action === 'cancel-approval') {
+    clearOperation(`package-approve:${state.approvalArmedVersionId}`);
     disarmApproval();
     renderWorkspace({ keepFocus: true });
     requestAnimationFrame(() => document.querySelector('[data-action="review-approval"]')?.focus());
     announce('Approval checkpoint closed. The package remains a draft.');
   }
   if (action === 'confirm-approval') void approvePackage(button.dataset.versionId);
+  if (action === 'carry-orphan-package') void carryOrphanedPackageDraft();
+  if (action === 'discard-orphan-package') {
+    state.packageOrphan = null;
+    state.packageOrphanFocusPending = false;
+    renderWorkspace({ keepFocus: true });
+    announce('Held package edits discarded; approved versions remain unchanged.');
+  }
   if (action === 'discard-package') {
+    const discardedVersionId = state.detail.workPackage?.currentVersion?.id || state.packageDraftVersionId;
+    clearOperation(`package-save:${discardedVersionId}`);
+    clearOperation(`package-approve:${discardedVersionId}`);
     if (state.packageConflict?.current) applyPackageVersionToDetail(state.packageConflict.current);
     state.packageDraftVersionId = '';
     state.packageDraft = null;
@@ -1310,30 +2062,10 @@ document.addEventListener('click', event => {
     const current = state.packageConflict?.current;
     if (!current || !state.packageDraft || !state.packageBase) return;
     const localDraft = { ...state.packageDraft };
-    const latestDraft = draftFromPackageContent(current.content);
-    const fieldConflicts = {};
-    for (const name of Object.keys(latestDraft)) {
-      const localChanged = localDraft[name] !== state.packageBase[name];
-      const latestChanged = latestDraft[name] !== state.packageBase[name];
-      if (localChanged && latestChanged && localDraft[name] !== latestDraft[name]) {
-        fieldConflicts[name] = { local: localDraft[name], latest: latestDraft[name] };
-      } else if (localChanged) latestDraft[name] = localDraft[name];
-    }
-    applyPackageVersionToDetail(current);
-    state.packageBase = draftFromPackageContent(current.content);
-    state.packageBaseRowVersion = current.rowVersion;
-    state.packageDraft = latestDraft;
-    state.packageDirty = Object.keys(latestDraft).some(name => latestDraft[name] !== state.packageBase[name]);
-    disarmApproval();
-    state.packageConflict = {
-      ...state.packageConflict,
-      rebased: true,
-      fieldConflicts,
-      message: Object.keys(fieldConflicts).length
-        ? 'Some fields changed in both views. Choose each value before saving.'
-        : 'Your non-overlapping changes are reapplied to the latest saved version.',
-    };
+    const priorBase = { ...state.packageBase };
+    installRebasedPackageDraft({ localDraft, priorBase, current });
     renderWorkspace({ keepFocus: true });
+    requestAnimationFrame(() => document.querySelector('.field-collision [data-action="resolve-package-field"]')?.focus({ preventScroll: true }));
   }
   if (action === 'resolve-package-field') {
     const name = button.dataset.field;
@@ -1346,9 +2078,29 @@ document.addEventListener('click', event => {
     state.packageConflict.message = hasUnresolvedPackageFields()
       ? 'Resolve every field that changed in both views before saving.'
       : 'All field conflicts are resolved. Review the combined draft, then save.';
+    const hasRemainingCollisions = hasUnresolvedPackageFields();
     renderWorkspace({ keepFocus: true });
+    requestAnimationFrame(() => {
+      const nextCollisionAction = hasRemainingCollisions
+        ? document.querySelector('.field-collision [data-action="resolve-package-field"]')
+        : null;
+      (nextCollisionAction || document.getElementById(`package-${name}`))?.focus({ preventScroll: true });
+    });
   }
-  if (action === 'refresh-after-conflict') void refreshDiscussion({ keepFocus: true });
+  if (action === 'refresh-after-conflict') {
+    void refreshDiscussion({ keepFocus: true }).then(applied => {
+      if (!applied || !state.feedback?.details?.current) return;
+      clearFeedback();
+      renderHeader();
+      renderWorkspace({ keepFocus: true });
+    }).catch(() => reportDisplayRefreshFailure());
+  }
+  if (action === 'reconcile-unconfirmed') {
+    if (state.phase === 'workspace') {
+      void refreshDiscussion({ keepFocus: true }).catch(() => reportDisplayRefreshFailure());
+    } else if (state.phase === 'project') void syncRoute();
+    else void loadBootstrap();
+  }
   if (action === 'view-version') {
     disarmApproval();
     state.viewedVersionId = button.dataset.versionId;
@@ -1357,12 +2109,14 @@ document.addEventListener('click', event => {
   if (action === 'next-version') {
     disarmApproval();
     const operationSlot = `next-version:${button.dataset.versionId}`;
-    void withMutation('next-version', () => api(`/api/work-package-versions/${encodeURIComponent(button.dataset.versionId)}/next-version`, {
-      method: 'POST', body: { idempotencyKey: operationKey(operationSlot, 'package-next') },
+    const target = `/api/work-package-versions/${encodeURIComponent(button.dataset.versionId)}/next-version`;
+    const payload = {};
+    void withMutation('next-version', () => api(target, {
+      method: 'POST', body: { idempotencyKey: operationKey(operationSlot, 'package-next', { target, payload }) },
     }), { refresh: false, successMessage: 'New draft version created; the approved version remains unchanged.', operationSlot }).then(async result => {
       if (result) {
         state.viewedVersionId = result.version.id;
-        await refreshDiscussion();
+        await refreshAfterCommittedMutation({ operationSlot });
       }
     });
   }
@@ -1403,15 +2157,16 @@ document.addEventListener('click', event => {
     });
   }
   if (action === 'refresh-capabilities') {
-    void withMutation('capabilities', () => api('/api/bootstrap'), {
+    void withMutation('capabilities', () => requestBootstrap(), {
       refresh: false,
-      successMessage: 'Provider capabilities checked.',
+      unconfirmedSource: 'action',
     }).then(result => {
       if (!result) return;
       state.bootstrap = result;
       state.projects = result.projects;
       renderHeader();
       renderWorkspace({ keepFocus: true });
+      announce('Provider capabilities checked.');
     });
   }
 });
