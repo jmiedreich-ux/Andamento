@@ -13,10 +13,11 @@ Development work follows [AGENTS.md](AGENTS.md), adapted from the proven VennuSi
 - `PROJECT_STATUS.md` — current control state and exact next action
 - `ai/handoffs/current.md` — durable session handoff
 - `tracker/assignments.json` — active ownership and conflict control
-- `DESIGN.md` — visual language developed for the VennuSign Workbench prototype
+- `.agents/skills/impeccable/` — project-local UI design, critique, audit, and bounded-verification skill
+- `docs/archive/vennusign-workbench-design.md` — non-authoritative historical record of the earlier VennuSign visual system
 - `SHEET_RELAY_DESIGN.md` — earlier Google Sheets-to-Codex relay architecture
 - `SHEET_UPDATE_STANDARD.md` — proven planning, attribution, conflict, and approval rules
-- `apps-script/` — Google Sheets sidebar and web-app prototype
-- `relay/` — local relay, Codex bridge, and interface prototypes
+- `apps-script/` — historical Google Sheets behavior and integration prototype
+- `relay/` — local relay, Codex bridge, and historical interface prototypes
 
-The Sheets documents are retained as design history and integration evidence. In the current direction, a local SQLite database becomes the system of record and Google Sheets becomes an optional future adapter.
+The earlier materials are retained for behavioral rules, accessibility lessons, and integration evidence. They are not visual design inputs for Andamento. In the current direction, a local SQLite database becomes the system of record and Google Sheets becomes an optional future adapter.

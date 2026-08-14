@@ -9,9 +9,14 @@ Read only the controlled records listed in `AGENTS.md`: current policy, handoff,
 ## Current Product Direction
 
 - `PRODUCT_DESIGN.md` — proposed product direction and smallest useful product
-- `DESIGN.md` — visual language inherited from the earlier VennuSign prototype; useful input, not yet a project-neutral approved design authority
+
+## Historical Evidence
+
+- `docs/archive/vennusign-workbench-design.md` — historical VennuSign visual system; explicitly non-authoritative for Andamento
 - `SHEET_RELAY_DESIGN.md` — earlier relay architecture and design history
 - `SHEET_UPDATE_STANDARD.md` — proven authority, attribution, conflict, and idempotency rules
+
+Historical UI materials may supply behavioral rules, state semantics, accessibility lessons, and integration evidence. They do not supply Andamento's palette, typography, assets, layout, component language, interaction composition, or branding.
 
 ## Feature Records
 

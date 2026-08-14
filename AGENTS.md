@@ -21,10 +21,11 @@ Read component, architecture, operations, or historical documents only when the 
 - A feature is delivered in numbered **milestones**. Each milestone is a small functional vertical piece that ships whole.
 - **Design before implementation.** UI work starts only after its design authority is explicitly approved and stored under `docs/design/approved/<feature>/`. Approved decisions win when another document conflicts.
 - Open questions are recorded under `docs/features/<feature>/open-questions.md`; they are never answered silently. Silence means deferred, not accepted.
-- Every implementation milestone carries its required storage, domain, service/API, UI, and end-to-end behavior together. Tests are written with the behavior, not added afterward.
+- Every implementation milestone carries its required storage, domain, service/API, UI, and end-to-end behavior together. For a UI-bearing milestone, storage → domain/service/API → UI → Playwright end-to-end specifications ship together. Tests are written with the behavior, not added afterward.
 - Each milestone must be independently mergeable and leave the default branch releasable.
 - Use one issue, one claim, one feature branch, and one pull request per milestone unless the owner approves a different boundary.
 - Work one milestone at a time. A successor starts only after its predecessor is merged and owner-accepted.
+- A UI milestone passes four distinct gates in order: implementation verification, Impeccable and Playwright UI QA, independent review, and owner acceptance. Evidence from one gate never satisfies another.
 - Every milestone ends with a short owner acceptance workbook or equivalent guided demo before the next milestone starts. The workbook should take roughly 5–10 minutes and focus on customer-visible outcomes.
 - Every pull request receives an independent review by an agent or person who did not author the implementation.
 
@@ -191,12 +192,23 @@ Consider every category below. Name non-applicable categories instead of silentl
 - Widen validation for shared contracts, authentication, migrations, dependencies, project configuration, provider adapters, or workflows.
 - Documentation-only changes use lightweight repository validation.
 
+### UI QA and Playwright
+
+- UI QA is a required gate distinct from independent review and owner acceptance.
+- Every UI-bearing milestone includes Playwright specifications for the complete customer-visible workflow and every applicable path named under **Map the Paths**, including supported viewports, navigation, persistence, validation, refusal, recovery, repeated submission, and concurrent activity where relevant.
+- Playwright runs against the real local application surface, application service, and SQLite boundary. Deterministic test adapters may replace paid or external model providers, but mocked UI, service, or persistence layers are not the sole end-to-end proof.
+- The applicable Playwright suite runs locally before a UI milestone is presented for review or acceptance. A suite that cannot start its required application, browser, service, or database fails the gate; unexecuted paths are **UNTESTED**, never implied passing.
+- Impeccable critique and audit evidence plus passing Playwright evidence form the UI QA gate. Neither one substitutes for the other.
+
 Until CI is configured and explicitly made authoritative, local validation is the gate and CI is **NOT CONFIGURED**, not implicitly passing.
 
 ## UI Completeness
 
 - UI work requires an approved design authority before implementation.
-- Before closing a UI milestone, perform an independent visual and interaction critique against that authority.
+- Before designing, changing, or reviewing a page or screen, load the project-local Impeccable skill at `.agents/skills/impeccable/SKILL.md` and follow its routing, context, craft-floor, and bounded-verification instructions applicable to the task.
+- Andamento has an independent visual language. VennuSign, Google Sheets, and earlier workbench palettes, typography, assets, layouts, components, and interaction compositions are historical evidence, not defaults. Visual reuse requires explicit owner approval in the affected Andamento design authority.
+- Before closing a UI milestone, run bounded Impeccable critique and audit passes against the approved design authority and resolve required findings or record an owner-approved exclusion.
+- Before approving an Andamento UI direction, compare it with the earlier interfaces at shell silhouette, grayscale hierarchy, typography, component shape, navigation, and discussion composition; it must remain clearly distinguishable without relying on the product name.
 - Record goals, hierarchy, navigation, CRUD actions, destructive-action safety, feedback, accessibility, responsiveness, and required data/API/auth support.
 - Resolve required gaps in scope or record an approved exclusion. Do not ship necessary actions or states as silent omissions.
 - Keep the work and owner decisions prominent. AI identity and chat controls remain supporting UI except inside a focused discussion room.
@@ -204,6 +216,7 @@ Until CI is configured and explicitly made authoritative, local validation is th
 ## Review and Merge Gate
 
 - The author never performs the only review of their own milestone.
+- Independent review is not QA. It evaluates the implementation, evidence, architecture, security, and scope, but cannot replace or waive required Impeccable or Playwright evidence.
 - Review the full diff, acceptance criteria, architecture and security impact, tests, exact reviewed head, artifacts, secrets, debug code, unrelated changes, branch drift, and documentation accuracy.
 - Review decisions are `APPROVE`, `REQUEST_CHANGES`, or `COMMENT`.
 - New commits invalidate a prior approval until the new head is reviewed.

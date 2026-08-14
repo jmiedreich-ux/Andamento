@@ -6,7 +6,7 @@ Initial product direction and build sequence.
 
 **Andamento** is the owner-approved product name as of 2026-08-14. In mosaic art, andamento is the visual flow and direction created by the placement of individual pieces. The name expresses the product's role: giving coherent direction to projects, discussions, decisions, work packages, evidence, and agent contributions without erasing their individual identity.
 
-“Development workbench” remains a category description, not a competing product name.
+“Development operations system” remains a category description, not a competing product name.
 
 ## Product Thesis
 
@@ -42,6 +42,22 @@ Andamento joins those concerns without treating conversation as authorization.
 8. **Provider-neutral.** OpenAI, Anthropic, local models, and future agents participate through adapters.
 9. **Evidence-led status.** The product never claims completion without the required evidence.
 10. **History is append-oriented.** Decisions may be superseded, but material history is not silently rewritten.
+11. **Independent visual language.** Andamento does not inherit the appearance or interaction composition of VennuSign, Google Sheets, or earlier workbench prototypes.
+
+## Visual Independence
+
+Andamento must be unmistakably its own product. It does not inherit the palette, typography, assets, layout, component forms, interaction composition, or product metaphors of VennuSign, Google Sheets, or the earlier workbench prototypes. Prior work may supply behavioral rules, state semantics, accessibility lessons, and integration evidence only. Any visual reuse requires explicit owner approval in an Andamento-specific design authority.
+
+The initial Andamento design should:
+
+- Express flow through continuity, lineage, rhythm, and directional grouping rather than literal mosaic tiles or decorative tile patterns.
+- Feel like a decision studio rather than a dispatch console, spreadsheet, or chat client.
+- Show discussion becoming planning points, decisions, and work packages without making the composer or agent identity the global visual center.
+- Give owner decisions, approval boundaries, evidence, and acceptance the strongest hierarchy; agents remain attributed supporting voices.
+- Establish an independent type, color, navigation, and component system rather than restyling the earlier interface.
+- Preserve universal usability rules such as visible focus, explicit status text, non-color state cues, readable measures, and responsive access to necessary actions.
+
+Exact palette, typography, layout, component language, and motion remain open until they are proposed and explicitly approved through an Andamento-specific design authority. Before approval, compare the proposal with the earlier VennuSign, Sheets, and relay interfaces at shell silhouette, grayscale hierarchy, typography, component shape, navigation, and discussion composition. It must remain clearly distinguishable without relying on the product name.
 
 ## Authority Model
 
@@ -198,7 +214,7 @@ This is more useful for daily operation than opening on a generic project dashbo
 
 ### 2. Discussion Room
 
-The center shows the focused discussion. The context rail shows the parent project, milestone, slice, relevant decisions, and source material. A planning tray shows proposed and accepted individual points. Participant controls select agents and discussion mode.
+The focused discussion keeps its parent project, milestone, slice, relevant decisions, source material, and proposed and accepted planning points visible. Participant controls select agents and discussion mode. Exact placement and interaction composition belong to the feature's approved design authority.
 
 The key action is **Prepare work package**, available without implying approval.
 
@@ -342,7 +358,7 @@ AgentContribution
   status
 ```
 
-Agents do not literally connect their consumer chat products to one another. The Workbench orchestrator calls supported provider or local-agent interfaces, records each contribution, and supplies the appropriate contributions to subsequent rounds.
+Agents do not literally connect their consumer chat products to one another. The Andamento application service calls supported provider or local-agent interfaces, records each contribution, and supplies the appropriate contributions to subsequent rounds.
 
 ## Performance Targets
 
@@ -372,6 +388,8 @@ These are product targets and must be measured with representative data before b
 
 The current Google Sheets and Codex relay remains valuable evidence and reusable integration work.
 
+Reuse in this section means domain rules, state semantics, accessibility lessons, adapter or protocol code, and integration learning only. It does not authorize reuse of prototype UI, visual assets, components, layout, interaction composition, or branding.
+
 Keep:
 
 - Explicit planning versus execution approval.
@@ -385,7 +403,7 @@ Change:
 
 - SQLite becomes authoritative instead of Google Sheets.
 - The product becomes project-neutral.
-- Discussion moves into the Workbench and becomes structured.
+- Discussion becomes a structured capability inside Andamento.
 - Multiple provider agents can participate through adapters.
 - Work-package versions, evidence, review, and acceptance become first-class entities.
 

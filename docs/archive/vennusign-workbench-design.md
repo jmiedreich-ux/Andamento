@@ -1,4 +1,6 @@
-# VennuSign Workbench Design System
+# Historical VennuSign Workbench Design System
+
+> Historical VennuSign artifact. This document is non-authoritative for Andamento. Do not copy its palette, typography, assets, layout, components, interaction composition, or branding into Andamento without explicit owner approval in an Andamento-specific design authority.
 
 ## Direction
 
