@@ -1,0 +1,487 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-14T12:02:15Z",
+  "title": "Design System: Andamento",
+  "extensions": {
+    "colorMeta": {
+      "mineral-ground": {
+        "role": "neutral",
+        "displayName": "Mineral Ground",
+        "canonical": "#e9ece6",
+        "tonalRamp": [
+          "oklch(15% 0.015 140)",
+          "oklch(25% 0.015 140)",
+          "oklch(38% 0.015 140)",
+          "oklch(52% 0.015 140)",
+          "oklch(65% 0.015 140)",
+          "oklch(77% 0.015 140)",
+          "oklch(88% 0.015 140)",
+          "oklch(95% 0.015 140)"
+        ]
+      },
+      "ground-deep": {
+        "role": "neutral",
+        "displayName": "Ground Deep",
+        "canonical": "#d7dbd2",
+        "tonalRamp": [
+          "oklch(15% 0.018 140)",
+          "oklch(25% 0.018 140)",
+          "oklch(38% 0.018 140)",
+          "oklch(52% 0.018 140)",
+          "oklch(65% 0.018 140)",
+          "oklch(77% 0.018 140)",
+          "oklch(88% 0.018 140)",
+          "oklch(95% 0.018 140)"
+        ]
+      },
+      "trace-paper": {
+        "role": "neutral",
+        "displayName": "Trace Paper",
+        "canonical": "#fbfbf5",
+        "tonalRamp": [
+          "oklch(15% 0.012 105)",
+          "oklch(25% 0.012 105)",
+          "oklch(38% 0.012 105)",
+          "oklch(52% 0.012 105)",
+          "oklch(65% 0.012 105)",
+          "oklch(77% 0.012 105)",
+          "oklch(88% 0.012 105)",
+          "oklch(95% 0.012 105)"
+        ]
+      },
+      "trace-layer": {
+        "role": "neutral",
+        "displayName": "Trace Layer",
+        "canonical": "rgb(250 250 243 / 88%)",
+        "tonalRamp": [
+          "oklch(15% 0.012 105)",
+          "oklch(25% 0.012 105)",
+          "oklch(38% 0.012 105)",
+          "oklch(52% 0.012 105)",
+          "oklch(65% 0.012 105)",
+          "oklch(77% 0.012 105)",
+          "oklch(88% 0.012 105)",
+          "oklch(95% 0.012 105)"
+        ]
+      },
+      "graphite": {
+        "role": "neutral",
+        "displayName": "Graphite",
+        "canonical": "#232923",
+        "tonalRamp": [
+          "oklch(15% 0.02 145)",
+          "oklch(25% 0.02 145)",
+          "oklch(38% 0.02 145)",
+          "oklch(52% 0.02 145)",
+          "oklch(65% 0.02 145)",
+          "oklch(77% 0.02 145)",
+          "oklch(88% 0.02 145)",
+          "oklch(95% 0.02 145)"
+        ]
+      },
+      "graphite-soft": {
+        "role": "neutral",
+        "displayName": "Graphite Soft",
+        "canonical": "#596159",
+        "tonalRamp": [
+          "oklch(15% 0.02 145)",
+          "oklch(25% 0.02 145)",
+          "oklch(38% 0.02 145)",
+          "oklch(52% 0.02 145)",
+          "oklch(65% 0.02 145)",
+          "oklch(77% 0.02 145)",
+          "oklch(88% 0.02 145)",
+          "oklch(95% 0.02 145)"
+        ]
+      },
+      "rule": {
+        "role": "neutral",
+        "displayName": "Rule",
+        "canonical": "#aeb4aa",
+        "tonalRamp": [
+          "oklch(15% 0.018 145)",
+          "oklch(25% 0.018 145)",
+          "oklch(38% 0.018 145)",
+          "oklch(52% 0.018 145)",
+          "oklch(65% 0.018 145)",
+          "oklch(77% 0.018 145)",
+          "oklch(88% 0.018 145)",
+          "oklch(95% 0.018 145)"
+        ]
+      },
+      "rule-strong": {
+        "role": "neutral",
+        "displayName": "Rule Strong",
+        "canonical": "#747c73",
+        "tonalRamp": [
+          "oklch(15% 0.02 145)",
+          "oklch(25% 0.02 145)",
+          "oklch(38% 0.02 145)",
+          "oklch(52% 0.02 145)",
+          "oklch(65% 0.02 145)",
+          "oklch(77% 0.02 145)",
+          "oklch(88% 0.02 145)",
+          "oklch(95% 0.02 145)"
+        ]
+      },
+      "lineage-plum": {
+        "role": "secondary",
+        "displayName": "Lineage Plum",
+        "canonical": "#684176",
+        "tonalRamp": [
+          "oklch(15% 0.09 315)",
+          "oklch(25% 0.09 315)",
+          "oklch(38% 0.09 315)",
+          "oklch(52% 0.09 315)",
+          "oklch(65% 0.09 315)",
+          "oklch(77% 0.09 315)",
+          "oklch(88% 0.09 315)",
+          "oklch(95% 0.09 315)"
+        ]
+      },
+      "lineage-plum-soft": {
+        "role": "secondary",
+        "displayName": "Lineage Plum Soft",
+        "canonical": "#ebe3ed",
+        "tonalRamp": [
+          "oklch(15% 0.035 315)",
+          "oklch(25% 0.035 315)",
+          "oklch(38% 0.035 315)",
+          "oklch(52% 0.035 315)",
+          "oklch(65% 0.035 315)",
+          "oklch(77% 0.035 315)",
+          "oklch(88% 0.035 315)",
+          "oklch(95% 0.035 315)"
+        ]
+      },
+      "owner-chartreuse": {
+        "role": "primary",
+        "displayName": "Owner Chartreuse",
+        "canonical": "#d8ed31",
+        "tonalRamp": [
+          "oklch(15% 0.18 112)",
+          "oklch(25% 0.18 112)",
+          "oklch(38% 0.18 112)",
+          "oklch(52% 0.18 112)",
+          "oklch(65% 0.18 112)",
+          "oklch(77% 0.18 112)",
+          "oklch(88% 0.18 112)",
+          "oklch(95% 0.18 112)"
+        ]
+      },
+      "owner-deep": {
+        "role": "primary",
+        "displayName": "Owner Deep",
+        "canonical": "#556100",
+        "tonalRamp": [
+          "oklch(15% 0.11 112)",
+          "oklch(25% 0.11 112)",
+          "oklch(38% 0.11 112)",
+          "oklch(52% 0.11 112)",
+          "oklch(65% 0.11 112)",
+          "oklch(77% 0.11 112)",
+          "oklch(88% 0.11 112)",
+          "oklch(95% 0.11 112)"
+        ]
+      },
+      "owner-action-ink": {
+        "role": "primary",
+        "displayName": "Owner Action Ink",
+        "canonical": "#202500",
+        "tonalRamp": [
+          "oklch(15% 0.045 112)",
+          "oklch(25% 0.045 112)",
+          "oklch(38% 0.045 112)",
+          "oklch(52% 0.045 112)",
+          "oklch(65% 0.045 112)",
+          "oklch(77% 0.045 112)",
+          "oklch(88% 0.045 112)",
+          "oklch(95% 0.045 112)"
+        ]
+      },
+      "owner-hover": {
+        "role": "primary",
+        "displayName": "Owner Hover",
+        "canonical": "#e2f447",
+        "tonalRamp": [
+          "oklch(15% 0.19 112)",
+          "oklch(25% 0.19 112)",
+          "oklch(38% 0.19 112)",
+          "oklch(52% 0.19 112)",
+          "oklch(65% 0.19 112)",
+          "oklch(77% 0.19 112)",
+          "oklch(88% 0.19 112)",
+          "oklch(95% 0.19 112)"
+        ]
+      },
+      "brick": {
+        "role": "danger",
+        "displayName": "Brick",
+        "canonical": "#a83f39",
+        "tonalRamp": [
+          "oklch(15% 0.14 28)",
+          "oklch(25% 0.14 28)",
+          "oklch(38% 0.14 28)",
+          "oklch(52% 0.14 28)",
+          "oklch(65% 0.14 28)",
+          "oklch(77% 0.14 28)",
+          "oklch(88% 0.14 28)",
+          "oklch(95% 0.14 28)"
+        ]
+      },
+      "brick-soft": {
+        "role": "danger",
+        "displayName": "Brick Soft",
+        "canonical": "#f5e4e1",
+        "tonalRamp": [
+          "oklch(15% 0.035 28)",
+          "oklch(25% 0.035 28)",
+          "oklch(38% 0.035 28)",
+          "oklch(52% 0.035 28)",
+          "oklch(65% 0.035 28)",
+          "oklch(77% 0.035 28)",
+          "oklch(88% 0.035 28)",
+          "oklch(95% 0.035 28)"
+        ]
+      },
+      "amber": {
+        "role": "warning",
+        "displayName": "Amber",
+        "canonical": "#876c00",
+        "tonalRamp": [
+          "oklch(15% 0.13 86)",
+          "oklch(25% 0.13 86)",
+          "oklch(38% 0.13 86)",
+          "oklch(52% 0.13 86)",
+          "oklch(65% 0.13 86)",
+          "oklch(77% 0.13 86)",
+          "oklch(88% 0.13 86)",
+          "oklch(95% 0.13 86)"
+        ]
+      },
+      "amber-soft": {
+        "role": "warning",
+        "displayName": "Amber Soft",
+        "canonical": "#f1edcf",
+        "tonalRamp": [
+          "oklch(15% 0.045 86)",
+          "oklch(25% 0.045 86)",
+          "oklch(38% 0.045 86)",
+          "oklch(52% 0.045 86)",
+          "oklch(65% 0.045 86)",
+          "oklch(77% 0.045 86)",
+          "oklch(88% 0.045 86)",
+          "oklch(95% 0.045 86)"
+        ]
+      },
+      "focus-violet": {
+        "role": "focus",
+        "displayName": "Focus Violet",
+        "canonical": "#6650a1",
+        "tonalRamp": [
+          "oklch(15% 0.12 295)",
+          "oklch(25% 0.12 295)",
+          "oklch(38% 0.12 295)",
+          "oklch(52% 0.12 295)",
+          "oklch(65% 0.12 295)",
+          "oklch(77% 0.12 295)",
+          "oklch(88% 0.12 295)",
+          "oklch(95% 0.12 295)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "Project registration and onboarding titles only."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Major station concepts and empty-state headings."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Dense station, room, and package headings."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Contribution, instruction, and control copy."
+      },
+      "label": {
+        "displayName": "Registration Label",
+        "purpose": "Versions, coordinates, counts, field labels, and state metadata."
+      }
+    },
+    "shadows": [
+      {
+        "name": "paper-lift",
+        "value": "0 8px 22px rgba(35, 41, 35, 0.15), 0 2px 5px rgba(35, 41, 35, 0.12)",
+        "purpose": "Lift registration and package sheets from the mineral ground."
+      },
+      {
+        "name": "registration-lift",
+        "value": "0 3px 12px rgba(35, 41, 35, 0.08)",
+        "purpose": "Separate the fixed registration strip from scrolling work."
+      },
+      {
+        "name": "station-lift",
+        "value": "0 3px 12px rgba(35, 41, 35, 0.07)",
+        "purpose": "Quiet separation for working stations."
+      },
+      {
+        "name": "junction-pin",
+        "value": "0 2px 5px rgba(35, 41, 35, 0.12)",
+        "purpose": "Give lineage nodes a pinned coordinate."
+      },
+      {
+        "name": "authority-action",
+        "value": "0 4px 10px rgba(85, 97, 0, 0.18)",
+        "purpose": "Identify primary owner actions without creating a glossy button."
+      }
+    ],
+    "motion": [
+      {
+        "name": "active-run-register",
+        "value": "1.2s steps(8) infinite",
+        "purpose": "Rotate only the active-run registration mark; reduced-motion disables it."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "compact-form",
+        "value": "640px"
+      },
+      {
+        "name": "supported-desktop",
+        "value": "1024px"
+      },
+      {
+        "name": "metadata-reduction",
+        "value": "1090px"
+      },
+      {
+        "name": "wide-three-region",
+        "value": "1280px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Chartreuse owner action for creation, confirmation, and package progression.",
+      "html": "<button class=\"ds-btn-primary\" type=\"button\">Add to discussion</button>",
+      "css": ".ds-btn-primary { min-height:34px; padding:7px 12px; border:1px solid #77850a; border-radius:2px; background:#d8ed31; color:#202500; font:650 .91rem/1.2 Bahnschrift, \"Arial Narrow\", sans-serif; box-shadow:0 4px 10px rgba(85,97,0,.18); cursor:pointer; } .ds-btn-primary:hover { border-color:#384000; background:#e2f447; } .ds-btn-primary:focus-visible { outline:3px solid #6650a1; outline-offset:2px; } .ds-btn-primary:active { transform:translateY(1px); }"
+    },
+    {
+      "name": "Text Button",
+      "kind": "button",
+      "refersTo": "button-text",
+      "description": "Reversible or secondary action that rests directly on the paper plane.",
+      "html": "<button class=\"ds-btn-text\" type=\"button\">Continue reviewing</button>",
+      "css": ".ds-btn-text { min-height:34px; padding:7px 12px; border:1px solid transparent; border-radius:2px; background:transparent; color:#232923; font:650 .91rem/1.2 Bahnschrift, \"Arial Narrow\", sans-serif; cursor:pointer; } .ds-btn-text:hover { border-color:#aeb4aa; background:rgba(255,255,255,.55); } .ds-btn-text:focus-visible { outline:3px solid #6650a1; outline-offset:2px; } .ds-btn-text:active { transform:translateY(1px); }"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "refersTo": "text-field",
+      "description": "Native trace-paper field for durable package and discussion input.",
+      "html": "<label class=\"ds-field-label\" for=\"ds-field\">Outcome</label><textarea class=\"ds-field\" id=\"ds-field\">Deliver a usable local planning loop.</textarea>",
+      "css": ".ds-field-label { display:block; margin-bottom:6px; color:#596159; font:650 .68rem/1.2 \"Cascadia Mono\", Consolas, monospace; letter-spacing:.055em; text-transform:uppercase; } .ds-field { box-sizing:border-box; width:100%; min-height:82px; padding:9px 10px; border:1px solid #747c73; border-radius:2px; background:rgba(251,251,245,.9); color:#232923; font:400 .91rem/1.45 Bahnschrift, \"Arial Narrow\", sans-serif; resize:vertical; } .ds-field:focus-visible { outline:3px solid #6650a1; outline-offset:2px; }"
+    },
+    {
+      "name": "Registration Navigation",
+      "kind": "nav",
+      "description": "Slim ruled header combining product registration, project context, and local status.",
+      "html": "<nav class=\"ds-register\" aria-label=\"Project registration\"><strong>Andamento</strong><span>PROJECT&nbsp;&nbsp;Andamento</span><span class=\"ds-local\">Local service ready</span></nav>",
+      "css": ".ds-register { display:grid; grid-template-columns:auto 1fr auto; min-height:58px; align-items:center; border-bottom:1px solid #747c73; background:rgba(251,251,245,.94); color:#232923; box-shadow:0 3px 12px rgba(35,41,35,.08); font:650 .84rem/1.2 Bahnschrift, \"Arial Narrow\", sans-serif; } .ds-register > * { min-width:0; padding:0 16px; } .ds-register > * + * { border-left:1px solid #aeb4aa; } .ds-local::before { display:inline-block; width:9px; height:9px; margin-right:7px; border:2px solid #556100; border-radius:50%; background:#d8ed31; content:\"\"; vertical-align:-1px; } .ds-register:focus-within { outline:3px solid #6650a1; outline-offset:-3px; }"
+    },
+    {
+      "name": "Planning Status",
+      "kind": "chip",
+      "description": "Word-and-shape state mark; never a color-only status.",
+      "html": "<span class=\"ds-status\"><span class=\"ds-status-mark\" aria-hidden=\"true\">✓</span> ACCEPTED</span>",
+      "css": ".ds-status { display:inline-flex; align-items:center; gap:8px; color:#232923; font:700 .72rem/1.2 \"Cascadia Mono\", Consolas, monospace; letter-spacing:.04em; } .ds-status-mark { display:inline-grid; width:28px; height:28px; place-items:center; border:2px solid #556100; border-radius:50%; background:#d8ed31; color:#202500; font:700 1rem/1 sans-serif; }"
+    },
+    {
+      "name": "Discussion Trace",
+      "kind": "card",
+      "refersTo": "trace-container",
+      "description": "Ruled contribution band with compact attribution and readable source content.",
+      "html": "<article class=\"ds-trace\"><aside><span class=\"ds-actor\" aria-hidden=\"true\"></span><strong>Owner</strong><small>Local owner</small></aside><div><b>OWNER CONTEXT</b><p>Keep the owner approval boundary explicit.</p></div></article>",
+      "css": ".ds-trace { display:grid; grid-template-columns:96px minmax(0,1fr); border-top:1px solid #aeb4aa; border-bottom:1px solid #aeb4aa; background:rgba(250,250,243,.88); color:#232923; font-family:Bahnschrift, \"Arial Narrow\", sans-serif; } .ds-trace aside { display:grid; align-content:start; gap:5px; padding:14px 12px; border-right:1px solid #aeb4aa; font-size:.76rem; } .ds-actor { width:18px; height:18px; border:2px solid #556100; background:#d8ed31; } .ds-trace div { padding:14px 18px; } .ds-trace b { color:#556100; font:700 .7rem/1.2 \"Cascadia Mono\", Consolas, monospace; } .ds-trace p { max-width:72ch; margin:8px 0 0; font-size:.91rem; line-height:1.48; }"
+    },
+    {
+      "name": "Lineage Node",
+      "kind": "custom",
+      "description": "Keyboard-operable source-to-point coordinate on the continuous provenance rule.",
+      "html": "<div class=\"ds-lineage\"><button class=\"ds-source\" type=\"button\" aria-label=\"Message 1 from Owner\">M1</button><span aria-hidden=\"true\"></span><button class=\"ds-point\" type=\"button\" aria-label=\"Point 1 accepted and included in package version 1\">P1</button></div>",
+      "css": ".ds-lineage { display:grid; justify-items:center; gap:0; width:72px; padding:10px 0; background:#e9ece6; color:#232923; font:700 .72rem/1 \"Cascadia Mono\", Consolas, monospace; } .ds-lineage > span { width:2px; height:18px; background:#747c73; } .ds-lineage button { display:grid; width:38px; height:38px; min-height:38px; padding:0; place-items:center; border:2px solid #684176; background:#ebe3ed; color:#232923; cursor:pointer; } .ds-lineage .ds-point { border-color:#556100; border-radius:50%; background:#d8ed31; box-shadow:0 0 0 3px #fbfbf5, 0 0 0 5px #556100; } .ds-lineage button:focus-visible { outline:3px solid #6650a1; outline-offset:3px; }"
+    },
+    {
+      "name": "Approval Checkpoint",
+      "kind": "custom",
+      "description": "Inline exact-version verification before append-only owner approval.",
+      "html": "<section class=\"ds-approval\"><h3>Approve version 1 as Owner?</h3><dl><div><dt>Completeness</dt><dd>6/6 sections</dd></div><div><dt>Source lineage</dt><dd>2 accepted points</dd></div></dl><p>Approval locks this version and never starts execution.</p><button type=\"button\">Confirm approval of v1</button></section>",
+      "css": ".ds-approval { display:grid; gap:12px; padding:14px; border:2px solid #556100; background:rgba(216,237,49,.13); color:#232923; font-family:Bahnschrift, \"Arial Narrow\", sans-serif; } .ds-approval h3,.ds-approval p,.ds-approval dl { margin:0; } .ds-approval dl { display:grid; grid-template-columns:1fr 1fr; border-top:1px solid #aeb4aa; border-bottom:1px solid #aeb4aa; } .ds-approval dl div { padding:8px; } .ds-approval dl div + div { border-left:1px solid #aeb4aa; } .ds-approval dt { color:#596159; font:650 .68rem/1.2 \"Cascadia Mono\", Consolas, monospace; text-transform:uppercase; } .ds-approval dd { margin:4px 0 0; font-weight:700; } .ds-approval button { min-height:48px; border:1px solid #77850a; border-radius:2px; background:#d8ed31; color:#202500; font:700 1rem/1.2 Bahnschrift, \"Arial Narrow\", sans-serif; cursor:pointer; } .ds-approval button:hover { background:#e2f447; } .ds-approval button:focus-visible { outline:3px solid #6650a1; outline-offset:2px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Lineage Table",
+    "overview": "Andamento is an architect's tracing table for consequential planning: a light mineral work surface where translucent paper, ruled stations, registration marks, and a continuous lineage spine make every transformation inspectable. Its density is purposeful and operational. Discussion, owner decisions, and the package remain visibly related instead of dissolving into a chat feed or a stack of generic cards.\n\nThe visual hierarchy gives the work and the owner's next decision priority over provider identity. Graphite establishes the instrument-like structure, muted plum carries provenance, and acid chartreuse appears sparingly where owner authority or approved readiness must be unmistakable. The result remains recognizably Andamento in grayscale and with the product name hidden; it does not borrow the dark shell, spreadsheet silhouette, typography, or component language of earlier interfaces.",
+    "keyCharacteristics": [
+      "A light mineral ground with translucent paper stations and sparse physical grain.",
+      "An asymmetric discussion–lineage–decision composition built around one continuous source trace.",
+      "Graphite rules and clipped paper corners instead of generic rounded cards.",
+      "Chartreuse reserved for owner authority and affirmative package state.",
+      "Condensed UI type paired with restrained monospaced metadata."
+    ],
+    "rules": [
+      {
+        "name": "The Authority Mark Rule",
+        "body": "Chartreuse identifies owner authority or a consequential affirmative transition; it never identifies agent activity.",
+        "section": "colors"
+      },
+      {
+        "name": "The Redundancy Rule",
+        "body": "Every status pairs color with a word and a distinct mark, so no workflow meaning depends on hue alone.",
+        "section": "colors"
+      },
+      {
+        "name": "The Workhorse Rule",
+        "body": "Condensed UI type carries the work; monospaced type identifies coordinates and state but never takes over paragraphs or primary decisions.",
+        "section": "typography"
+      },
+      {
+        "name": "The Visible Lineage Rule",
+        "body": "Never replace the source spine or package context with an opaque modal; navigation changes the active station while provenance stays reachable.",
+        "section": "layout"
+      },
+      {
+        "name": "The Paper-Stack Rule",
+        "body": "Add depth only when one implemented sheet or control must sit above another; routine rows and sections stay flat and ruled.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Instrument Rule",
+        "body": "Geometry must identify source, actor, disposition, or authority; decorative blobs, pill containers, and arbitrary rounding do not belong on the tracing table.",
+        "section": "shapes"
+      }
+    ],
+    "dos": [
+      "Do preserve the light tracing-table silhouette, asymmetric work regions, and continuous source-to-package lineage.",
+      "Do keep chartreuse rare and attach it to owner authority, accepted state, or explicit readiness.",
+      "Do use graphite rules, clipped paper corners, and low-opacity grain to communicate material structure.",
+      "Do pair every state color with visible text, distinct geometry, and an accessible relationship or announcement.",
+      "Do keep the package action reachable while long discussion, decision, and package regions scroll independently."
+    ],
+    "donts": [
+      "Don't turn contributions into chat bubbles or make AI identity the visual center of the application.",
+      "Don't replace the lineage spine or exact-version checkpoint with a generic sidebar, summary card, or modal.",
+      "Don't introduce a dark console shell, spreadsheet chrome, pill-heavy controls, literal mosaic decoration, or historical interface assets.",
+      "Don't use texture, transparency, color, or the owner seal as the only proof of meaning or approval.",
+      "Don't imply mobile product support from the compact browser-zoom safety reflow."
+    ]
+  }
+}

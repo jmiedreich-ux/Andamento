@@ -15,12 +15,21 @@ relay/relay.state.json
 relay/relay.stop
 relay/logs/
 
-# Generated evidence and protocol exports
+# Generated evidence, protocol exports, and browser artifacts
 relay/artifacts/
 relay/protocol-*/
 relay/protocol-ts-*/
+test-results/
+playwright-report/
+blob-report/
+artifacts/
+.impeccable/screenshots/
+.impeccable/mocks/*
+!.impeccable/mocks/planning-room-lineage-spine.json
+!.impeccable/mocks/planning-room-lineage-spine.png
 
 # Local databases and SQLite sidecars
+var/
 *.db
 *.db-shm
 *.db-wal

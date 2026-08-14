@@ -9,6 +9,8 @@ Read only the controlled records listed in `AGENTS.md`: current policy, handoff,
 ## Current Product Direction
 
 - `PRODUCT_DESIGN.md` — proposed product direction and smallest useful product
+- `PRODUCT.md` — durable product context and constraints
+- `DESIGN.md` — implemented Andamento visual language and component rules
 
 ## Historical Evidence
 
@@ -20,17 +22,15 @@ Historical UI materials may supply behavioral rules, state semantics, accessibil
 
 ## Feature Records
 
-Use `docs/features/<feature>/` only for an active or owner-approved feature. A feature normally contains:
+Use `docs/features/<feature>/` only for an active or owner-approved feature. The current feature record is:
 
-- `milestone-plan.md`
-- `open-questions.md`
-- `acceptance-criteria.md`
-- milestone acceptance workbooks and records
+- `docs/features/planning-loop/feature.md` — Milestone 1 scope, invariant, evidence, and owner acceptance record
+- `docs/features/planning-loop/open-questions.md` — deliberately deferred decisions
 
 ## Design Authority
 
 - Proposed design belongs under `docs/design/proposed/<feature>/`.
-- Owner-approved design moves to `docs/design/approved/<feature>/` with a `decisions.md` record.
+- Owner-approved design belongs under `docs/design/approved/<feature>/`; Planning Loop Milestone 1 is governed by `docs/design/approved/planning-loop/milestone-1.md`.
 - Repository presence is not approval. The approved decisions record wins when design artifacts conflict.
 
 ## Creation and Updates

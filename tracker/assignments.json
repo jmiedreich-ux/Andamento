@@ -1,7 +1,16 @@
 {
-  "updatedUtc": "2026-08-14T09:19:34Z",
+  "updatedUtc": "2026-08-14T11:45:00Z",
   "policy": "One active implementation milestone at a time. No two agents may modify the same file concurrently.",
-  "activeAssignment": null,
-  "status": "NO_ACTIVE_CLAIM",
-  "notes": "The private Andamento repository is established on GitHub. Product and process design remain proposed; no application implementation is authorized until the first feature design and milestone are owner-approved."
+  "activeAssignment": {
+    "feature": "planning-loop",
+    "milestone": 1,
+    "workPackage": "AND-N1-PLANNING-LOOP-v1",
+    "owner": "root",
+    "branch": "feature/planning-loop-m1",
+    "authorizedBy": "Owner /goal objective on 2026-08-14",
+    "scope": "Local discussion-to-approved-package vertical slice",
+    "sharedFilesOwnedBy": "root"
+  },
+  "status": "READY_FOR_INDEPENDENT_REVIEW",
+  "notes": "Implementation verification and Impeccable plus Playwright UI QA passed. Night 1 uses a local-only issue/PR/push exception; the next gate is independent exact-head review."
 }

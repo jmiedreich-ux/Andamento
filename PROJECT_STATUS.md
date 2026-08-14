@@ -4,22 +4,22 @@
 
 - **Product name:** **Andamento**, explicitly approved by the owner on 2026-08-14. The name comes from the visual flow and direction created by arranging individual pieces in a mosaic.
 - **Product direction:** Initial project-neutral design is captured in `PRODUCT_DESIGN.md`.
-- **Design status:** Proposed. The owner has asked to begin design and adopt the VennuSign development process only; no feature design bundle has yet been explicitly approved for implementation.
-- **Visual direction:** Andamento must be unmistakably distinct from VennuSign, Google Sheets, and earlier workbench prototypes. Its exact visual system remains open until an Andamento-specific design authority is explicitly approved.
+- **Design status:** Planning Loop Milestone 1 is approved for implementation under `docs/design/approved/planning-loop/milestone-1.md` through the owner's active Night 1 goal.
+- **Visual direction:** The approved first surface uses an independent light architectural tracing-table world centered on a visible lineage spine. VennuSign, Google Sheets, and earlier workbench visuals remain historical anti-references.
 - **System of record direction:** Local SQLite in WAL mode, accessed through a local application service.
 - **Existing prototype:** Google Sheets, Apps Script, and the Codex relay remain behavioral and integration evidence only. They are neither the intended authoritative backend nor visual design inputs for the new product.
 - **Repository state:** Initialized on `main` with private GitHub remote `https://github.com/jmiedreich-ux/Andamento`. The one-time repository bootstrap is administrative setup and does not authorize feature implementation.
-- **Implementation state:** No implementation feature or milestone is approved, claimed, or in progress.
-- **UI QA direction:** UI-bearing milestones require the project-local Impeccable workflow and complete Playwright end-to-end coverage. Implementation verification, UI QA, independent review, and owner acceptance are separate gates. The Playwright harness is not yet configured because no UI stack or implementation milestone is approved.
+- **Implementation state:** Planning Loop Milestone 1 (`AND-N1-PLANNING-LOOP-v1`) is complete locally on `feature/planning-loop-m1` and ready for independent exact-head review. It stops at an immutable package marked `READY_FOR_EXECUTION`; package execution is out of scope.
+- **Verification state:** Implementation verification passed 14/14. Playwright passed 8/8 against the real UI, service, and on-disk SQLite boundary. The bounded Impeccable finish review returned PASS with no unresolved P0/P1 findings. Independent review and owner acceptance remain separate gates.
 - **CI state:** Not configured.
 
 ## Working Model
 
 The project uses features delivered through small, owner-accepted vertical milestones. Design authority, open questions, implementation scope, Impeccable and Playwright QA, independent review, evidence, and final acceptance are separate controlled stages. `AGENTS.md` is the authoritative development policy.
 
-## Proposed First Feature
+## Active First Feature
 
-The proposed first feature is the **Multi-agent planning loop**:
+The active first feature is the **Planning loop**:
 
 ```text
 discussion
@@ -29,8 +29,8 @@ discussion
   -> explicit approval
 ```
 
-Execution, UI QA, independent review, evidence, and final acceptance should follow as the next vertical capability only when the first milestone boundaries are approved. The feature name and milestone plan remain proposed until the owner accepts them.
+Repository execution, implementation evidence, product review, and final product acceptance inside Andamento follow only in later approved milestones. The current build includes its own external implementation tests, UI QA, independent review, and morning owner-acceptance handoff.
 
 ## Exact Next Action
 
-Create the proposed first feature's design authority, milestone plan, acceptance criteria, blocking open-question register, and UI QA plan for owner review. The design authority must propose an Andamento-specific visual direction and demonstrate its distinction from the historical interfaces; the QA plan must map the complete user workflow to Impeccable review and Playwright end-to-end coverage. Do not begin application implementation before that review is resolved and approved.
+Commit the bounded local milestone, obtain independent review of that exact head, resolve any material finding, and then synchronize the controlled records to `READY_FOR_OWNER_ACCEPTANCE` without pushing to GitHub.
