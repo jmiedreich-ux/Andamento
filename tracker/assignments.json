@@ -1,16 +1,8 @@
 {
-  "updatedUtc": "2026-08-15T00:20:00Z",
-  "policy": "One active implementation milestone at a time. No two agents may modify the same file concurrently.",
-  "activeAssignment": {
-    "feature": "planning-loop",
-    "milestone": 1,
-    "workPackage": "AND-N1-PLANNING-LOOP-v1",
-    "owner": "coordinating-agent",
-    "branch": "feature/planning-loop-m1",
-    "authorizedBy": "Owner /goal objective on 2026-08-14",
-    "scope": "Local discussion-to-approved-package vertical slice",
-    "sharedFilesOwnedBy": "coordinating-agent; claimed from the takeover checkpoint to finish route-scoped recovery and restore the local gates"
-  },
-  "status": "READY_FOR_INDEPENDENT_REVIEW",
-  "notes": "Route-scoped pending-input recovery, bootstrap supersession, stale-read alert suppression, and lost-receipt package reconciliation are complete, and round-one review findings are fixed. Local gates pass: npm test 53/53, coverage 90.33% lines for server code, Playwright 10/10, npm audit 0 vulnerabilities, 16/16 runtime invariants. Three agent reviews covered commit 42cdc5f, which the fixes supersede, so a fresh exact-head review is required before merge; owner acceptance is not recorded."
+  "updatedUtc": "2026-08-15T02:10:00Z",
+  "policy": "Coding first. One branch (main) for local work; commit at a completed slice, not after every edit.",
+  "activeAssignment": null,
+  "branch": "main",
+  "status": "READY_FOR_NEXT_CAPABILITY",
+  "notes": "Planning loop, unconfirmed-input recovery, package execution with apply and revert, live Claude contributions, and the home view are merged to main. feature/planning-loop-m1 was fast-forwarded and deleted; PR #1 closed as merged. Local gates on main: npm test 77/77, Playwright 10/10, npm audit 0 vulnerabilities, 23 runtime invariants."
 }

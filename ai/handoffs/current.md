@@ -1,62 +1,39 @@
 # Andamento Session Handoff
 
-Updated 2026-08-14 after finishing the browser recovery work that blocked the takeover checkpoint.
+Updated 2026-08-15 after merging the planning-loop work to `main` and retiring its branch.
 
 ## Established
 
-- The approved product, authority model, Milestone 1 scope, and design authority remain unchanged. `AGENTS.md`, `docs/features/planning-loop/feature.md`, and `docs/design/approved/planning-loop/milestone-1.md` are authoritative.
-- The active branch is `feature/planning-loop-m1`, published as draft PR [#1](https://github.com/jmiedreich-ux/Andamento/pull/1).
-- Every item listed as incomplete in the takeover handoff is now implemented and covered by executed tests.
-- Unconfirmed input recovery is route-scoped and in-memory. A mutation that ends in `REQUEST_UNCONFIRMED` holds one recovery record per operation slot, stamped with its project and planning-room identity, and never crosses a project or room boundary. The record is re-snapshotted from live draft state on every route exit, so edits made after the failure are carried and repeated leave-and-return cycles keep working. Resubmission of unchanged content reuses the original request-bound idempotency key, so a lost receipt cannot create a duplicate durable record.
-- Before restoring, the browser reconciles each held entry against freshly loaded durable state. An entry that already committed is retired and reported as already saved rather than offered back as unsent — which matters because an *edited* resubmission mints a new key and would create a second durable record. A replacement whose point has since been decided, or a capture whose source contribution is gone, is refused explicitly instead of restored into an action the authority model forbids.
-- Every recovery outcome is reported as a visible status near the affected station as well as a polite announcement, and the wording distinguishes restored, rebased, held, already-saved, and refused.
-- The outbound provider bridge URL is now validated as loopback `ws:`/`wss:` at startup, mirroring the inbound binding rule, and an invalid port fails startup instead of silently falling back.
-- A package save whose response is lost but whose exact content is already durable reconciles to saved instead of raising a false concurrent-edit conflict, both while the owner stays in the room and on return to it.
-- A superseded bootstrap or room read can neither replace a newer healthy route nor strand the loading surface, and a resolved error is retracted from the live regions instead of being left announced.
-- Local gates on the current worktree: `npm test` **53/53**; `npm run test:coverage` **90.33% lines, 77.67% branches, 88.30% functions**; `npm run test:e2e` **10/10**; `npm audit --audit-level=high` **0 vulnerabilities**; `node --check` on the changed modules, `git diff --check`, and a credential-pattern scan of the diff all clean; the running service reports **16/16** invariants passing.
-- Coverage describes **server code only**. There is no row for `app/public/app.mjs`; the browser delta has zero `node --test` coverage by construction and is proved by Playwright alone. Do not read 90.33% as delta coverage.
-- Four browser regressions were proved by inversion — recovery arming, lost-receipt package reconciliation, durable-entry reconciliation, and route-exit re-snapshotting — plus the provider-bridge guard via the integration suite. Each fix was restored and re-run to a pass; `grep -c "false &&" app/public/app.mjs` returns 0.
-- Five further defects were found by the new specifications and fixed: the bootstrap-retry surface, a resolved error left announced in the assertive live region after navigation, a stale `Package edits unsaved` header after reconciliation, an unheard refusal destroyed by retraction during a redirect, and a replacement restored onto a decided planning point.
-- This delta changed no markup, stylesheet, or asset. The approved visual direction and the existing Impeccable screenshots still describe the surface.
-
-## Review Round One
-
-Three agent reviewers examined commit `42cdc5f`; none authored it.
-
-- Impeccable finish review: **FAIL**, 8 material findings.
-- Independent implementation review: **REQUEST_CHANGES**, 4 material findings. It re-executed `npm test` and `npm run test:coverage` and confirmed both claims exactly.
-- Independent security review: **LOW residual risk**, no CRITICAL or HIGH, one MEDIUM fixed and one MEDIUM accepted as Milestone 1 scope.
-
-Two findings were raised independently by two reviewers, which is why they were treated as the priority: committed-but-unreceipted entries were never retired for four of five slot types, and the restore announcement told the owner to resubmit work that was already durable.
-
-All material findings are now fixed or explicitly recorded as accepted risk or backlog in `docs/features/planning-loop/feature.md`. Four fixes were proved by inversion, plus the provider-bridge guard.
+- `main` is the only branch. `feature/planning-loop-m1` was fast-forwarded onto it with all commits intact and then deleted locally and on GitHub; draft PR [#1](https://github.com/jmiedreich-ux/Andamento/pull/1) closed itself as merged. Nothing was squashed or lost.
+- The working loop is: register a project → open a planning room → gather owner, Claude, Codex, and imported contributions → capture source-linked planning points → decide each one → assemble accepted points into a package → approve one exact version → dispatch it → read or revert what changed.
+- **Planning loop.** Owner authority, source lineage, append-only approval events, and immutable approved versions are enforced in the service and again by SQLite triggers.
+- **Unconfirmed input recovery.** A mutation ending in `REQUEST_UNCONFIRMED` holds one route-scoped record per operation slot, re-snapshotted on every route exit, reconciled against durable state before restoring, and resubmitted under the original idempotency key. It never crosses a project or room boundary and does not survive a full reload.
+- **Package execution.** Dispatch is a separate owner act after approval. It reads the allowlisted repository, produces a unified diff recorded as immutable evidence, and applies it. Every touched file is snapshotted first, so Revert restores the exact prior state without requiring git.
+- **Live Claude.** `Ask Claude` calls the Anthropic Messages API directly through the built-in fetch, defaulting to `claude-opus-5` and overridable with `ANDAMENTO_ANTHROPIC_MODEL`. The credential is read from a gitignored `.env` at startup and never reaches SQLite, logs, audit records, or the browser.
+- **Home view.** The root route answers one cross-project question: what is waiting on the owner? Undecided points, draft packages with their missing sections, approved-but-never-dispatched versions, and stopped work not yet retried.
+- Local gates on `main`: `npm test` **77/77**, `npm run test:e2e` **10/10**, `npm audit --audit-level=high` **0 vulnerabilities**, **23** runtime invariants passing. Six ordered migrations.
+- Working style, set by the owner on 2026-08-15: coding first, minimal process. Commit at a completed slice rather than after every edit. Do not gate routine local work behind git.
 
 ## Known Incomplete Work
 
-1. The three reviews above cover `42cdc5f`, which is superseded by the fixes answering them. `AGENTS.md` holds that new commits invalidate a prior approval, so a **fresh independent review of the current head** is required before merge.
-2. The Impeccable detector already ran exactly once and must **not** be rerun; use a bounded critique or finish review. The delta still changes no markup, stylesheet, or asset.
-3. Owner acceptance has not been recorded.
+1. Execution has been proved against the live Codex bridge on a scratch repository, not yet on a large real one.
+2. `Ask Claude` has no execute capability, so Claude can recommend and challenge but cannot produce a change set.
+3. No independent review covers the execution, apply/revert, Claude, or home-view work. The earlier review round covered a superseded commit.
+4. The Impeccable detector ran exactly once, long before the current UI. It must **not** be rerun; use a bounded critique or finish review.
 
 ## Assumed
 
-- The product remains local-first and single-owner for Milestone 1 while preserving participant/provider/source attribution.
-- Live Anthropic integration remains unavailable without credentials; imported attributed contributions and deterministic adapters remain the supported Milestone 1 paths.
+- The product remains local-first and single-owner, while preserving participant, provider, and source attribution.
 
 ## Deliberately Deferred
 
-- Repository execution, autonomous multi-agent rounds, remote sync, organization roles, CI/branch protection, and mobile product support remain outside Milestone 1.
-- CI is **NOT CONFIGURED**. Local validation remains authoritative.
+- Multi-agent rounds, remote sync, authentication, mobile support, and CI. CI is **NOT CONFIGURED**; local validation is the gate.
 
 ## Awaiting Owner Decision
 
-- Whether unsent planning input should survive a full page reload or a browser process interruption. The current boundary is deliberate, documented, and executed: durable records reload from SQLite and unsent input does not persist. Extending it needs a durable service-side draft record or an explicitly approved browser-storage policy. This is recorded in `docs/features/planning-loop/open-questions.md`; it is not silently deferred.
-
-## Current Control State
-
-- Work package `AND-N1-PLANNING-LOOP-v1` remains the only authorized implementation scope.
-- Status is **READY_FOR_INDEPENDENT_REVIEW**. It is not `READY_FOR_OWNER_ACCEPTANCE`, and the branch must not merge until the Impeccable finish review and the independent exact-head review pass.
-- The coordinating agent owns the shared files. A reviewer should not edit them; findings return to the coordinating agent.
+- Whether unsent planning input should survive a full page reload. The current boundary is deliberate and asserted by test: durable records reload from SQLite, held recovery records do not. Recorded in `docs/features/planning-loop/open-questions.md`.
+- Whether to adopt `@anthropic-ai/sdk`. The Claude adapter uses the built-in fetch because `PRODUCT.md` records a dependency-light architecture; adding the first runtime dependency is an owner call.
 
 ## Exact Next Action
 
-Run a fresh independent review against the current head of `feature/planning-loop-m1` — the round-one reviews cover superseded commit `42cdc5f` — recording the reviewer, reviewed commit, validation status, decision, and residual risks on PR #1.
+Pick the next capability from the backlog in `PROJECT_STATUS.md` and build it on `main`.
