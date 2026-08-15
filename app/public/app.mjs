@@ -861,9 +861,14 @@ function packageCompleteness(draft = {}) {
 }
 
 function executionStatusLabel(run) {
+  const files = run.changeSet?.fileCount || 0;
+  if (run.status === 'SUCCEEDED') {
+    if (!files) return 'No change needed';
+    if (run.revertedAt) return `Reverted · ${files} file${files === 1 ? '' : 's'}`;
+    return `Applied · ${files} file${files === 1 ? '' : 's'} changed`;
+  }
   return {
     RUNNING: 'Reading the repository…',
-    SUCCEEDED: `${run.changeSet?.fileCount || 0} file${run.changeSet?.fileCount === 1 ? '' : 's'} proposed`,
     FAILED: 'Execution failed',
     CANCELLED: 'Execution cancelled',
     INTERRUPTED: 'Execution interrupted',
@@ -877,9 +882,9 @@ function changeSetMarkup(run) {
   }
   return `
     <details class="execution-diff">
-      <summary>Read the proposed change set</summary>
+      <summary>${run.revertedAt ? 'Read the reverted change set' : 'Read what changed'}</summary>
       <pre class="diff-view" tabindex="0" aria-label="Proposed change set">${escapeHtml(run.changeSet.diff)}</pre>
-      <p class="lineage-footnote">Nothing was written. This change set is a proposal recorded against v${run.versionNumber || ''} · sha256 ${escapeHtml(run.changeSet.diffSha256.slice(0, 12))}…</p>
+      <p class="lineage-footnote">${run.revertedAt ? 'These files were restored to their previous contents.' : 'These files were changed in your repository.'} Recorded against v${run.versionNumber || ''} · sha256 ${escapeHtml(run.changeSet.diffSha256.slice(0, 12))}…</p>
     </details>`;
 }
 
@@ -909,6 +914,8 @@ function executionMarkup(selected) {
         <time datetime="${escapeHtml(run.startedAt)}">${escapeHtml(formatDate(run.startedAt, { timeOnly: true }))}</time>
         ${run.status === 'RUNNING'
           ? `<button type="button" class="text-action" data-action="cancel-execution" data-run-id="${escapeHtml(run.id)}" ${isBusy(`execution:${run.id}`) ? 'disabled' : ''}>Cancel</button>` : ''}
+        ${run.appliedAt && !run.revertedAt
+          ? `<button type="button" class="text-action" data-action="revert-execution" data-run-id="${escapeHtml(run.id)}" ${isBusy(`execution:${run.id}`) ? 'disabled' : ''}>${isBusy(`execution:${run.id}`) ? 'Reverting…' : 'Revert these files'}</button>` : ''}
       </div>
       ${run.errorMessage ? `<p class="execution-error" role="status">${escapeHtml(run.errorMessage)}</p>` : ''}
       ${changeSetMarkup({ ...run, versionNumber: selected.versionNumber })}
@@ -917,7 +924,7 @@ function executionMarkup(selected) {
     <section class="execution-station" aria-labelledby="executionTitle">
       <span class="station-label">Execution</span>
       <h4 id="executionTitle">Proposed change set</h4>
-      <p class="execution-guidance">Dispatch reads this repository and returns a change set for you to read. Nothing is written to your files.</p>
+      <p class="execution-guidance">Approving this package authorized the work. Dispatch reads this repository and makes the change. Every file is backed up first, so you can revert without touching git.</p>
       <div class="execution-actions">${actions}</div>
       ${executions.length ? `<ul class="execution-list" aria-label="Execution runs">${rows}</ul>` : ''}
     </section>`;
@@ -2448,6 +2455,16 @@ document.addEventListener('click', event => {
       method: 'POST',
       body: { idempotencyKey: operationKey(operationSlot, 'execution-cancel', { target, payload: {} }) },
     }), { successMessage: 'Execution cancelled.', operationSlot });
+  }
+  if (action === 'revert-execution') {
+    const runId = button.dataset.runId;
+    if (isBusy(`execution:${runId}`)) return;
+    const operationSlot = `revert-execution:${runId}`;
+    const target = `/api/execution-runs/${encodeURIComponent(runId)}/revert`;
+    void withMutation(`execution:${runId}`, () => api(target, {
+      method: 'POST',
+      body: { idempotencyKey: operationKey(operationSlot, 'execution-revert', { target, payload: {} }) },
+    }), { successMessage: 'Those files were restored to their previous contents.', operationSlot });
   }
   if (action === 'right-tab') {
     state.rightTab = button.dataset.tab;

@@ -29,18 +29,21 @@ export class DeterministicPlanningAgent {
     if (/\[no-change\]/i.test(marker)) {
       return { provider: this.provider, model: this.model, diff: '' };
     }
-    const scope = (content.includedScope || []).map((item, index) => `${index + 1}. ${item}`).join('\n');
+    const body = [
+      `# ${content.outcome}`,
+      '',
+      ...(content.includedScope || []).map((item, index) => `${index + 1}. ${item}`),
+    ];
     return {
       provider: this.provider,
       model: this.model,
       diff: [
         'diff --git a/PLANNED_WORK.md b/PLANNED_WORK.md',
-        '--- a/PLANNED_WORK.md',
+        'new file mode 100644',
+        '--- /dev/null',
         '+++ b/PLANNED_WORK.md',
-        '@@ -0,0 +1,4 @@',
-        `+# ${content.outcome}`,
-        '+',
-        ...scope.split('\n').filter(Boolean).map(line => `+${line}`),
+        `@@ -0,0 +1,${body.length} @@`,
+        ...body.map(line => `+${line}`),
         '',
       ].join('\n'),
     };

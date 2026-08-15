@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
+import path from 'node:path';
 import { realpath, stat } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import {
@@ -23,6 +24,7 @@ import {
 } from './domain/validation.mjs';
 import { appendAudit, mutation, now, transaction } from './storage/database.mjs';
 import { buildChangeSet } from './execution/change-set.mjs';
+import { applyChangeSet, revertApplication } from './execution/apply.mjs';
 
 const OWNER_ID = 'owner-local';
 const CODEX_CLEANUP_PENDING = 'CODEX_CLEANUP_PENDING';
@@ -41,6 +43,7 @@ const SAFE_AGENT_FAILURES = new Map([
   ['REPOSITORY_UNAVAILABLE', 'The registered Git repository is no longer available. Restore it before retrying.'],
   ['MALFORMED_CHANGE_SET', 'The participant answered without a change set. This usually means the package does not yet describe a concrete change to this repository. Sharpen the outcome and included scope, then dispatch again.'],
   ['CHANGE_SET_ESCAPES_REPOSITORY', 'The proposed change set refers to a path outside the project repository and was refused.'],
+  ['CHANGE_SET_DID_NOT_APPLY', 'The proposed change set did not apply cleanly to the current files. Nothing was changed.'],
 ]);
 const execFileAsync = promisify(execFile);
 
@@ -149,6 +152,8 @@ function mapExecutionRun(row) {
     startedAt: row.startedAt,
     completedAt: row.completedAt || '',
     rowVersion: row.rowVersion,
+    appliedAt: row.appliedAt || '',
+    revertedAt: row.revertedAt || '',
     changeSet: row.changeSetId ? {
       id: row.changeSetId,
       diff: row.diff,
@@ -1095,10 +1100,12 @@ export class PlanningService {
                er.started_at AS startedAt, er.completed_at AS completedAt,
                er.row_version AS rowVersion, p.display_name AS displayName,
                ecs.id AS changeSetId, ecs.diff, ecs.diff_sha256 AS diffSha256,
-               ecs.file_count AS fileCount, ecs.created_at AS changeSetCreatedAt
+               ecs.file_count AS fileCount, ecs.created_at AS changeSetCreatedAt,
+               ea.applied_at AS appliedAt, ea.reverted_at AS revertedAt
         FROM execution_runs er
         JOIN participants p ON p.id = er.participant_id
         LEFT JOIN execution_change_sets ecs ON ecs.execution_run_id = er.id
+        LEFT JOIN execution_applications ea ON ea.execution_run_id = er.id
         JOIN work_package_versions wpv ON wpv.id = er.work_package_version_id
         WHERE wpv.work_package_id = ? ORDER BY er.started_at DESC, er.id
       `).all(packageRow.id).map(mapExecutionRun);
@@ -1280,6 +1287,20 @@ export class PlanningService {
               WHERE er.status <> 'SUCCEEDED'`,
       },
       {
+        name: 'applied files always match a recorded change set',
+        sql: `SELECT ea.id FROM execution_applications ea
+              LEFT JOIN execution_change_sets ecs ON ecs.execution_run_id = ea.execution_run_id
+              WHERE ecs.id IS NULL
+                 OR ecs.diff_sha256 <> ea.diff_sha256
+                 OR ecs.file_count <> ea.file_count`,
+      },
+      {
+        name: 'only a succeeded execution writes files',
+        sql: `SELECT ea.id FROM execution_applications ea
+              JOIN execution_runs er ON er.id = ea.execution_run_id
+              WHERE er.status <> 'SUCCEEDED'`,
+      },
+      {
         name: 'a succeeded execution has exactly one change set',
         sql: `SELECT er.id FROM execution_runs er
               LEFT JOIN execution_change_sets ecs ON ecs.execution_run_id = er.id
@@ -1370,6 +1391,44 @@ export class PlanningService {
     return mapPoint(row);
   }
 
+  executionBackupDirectory(runId) {
+    return path.resolve('var', 'execution-backups', runId);
+  }
+
+  async revertExecution(runId, input = {}, actorId) {
+    this.assertOwner(actorId);
+    const normalizedRunId = requiredId(runId, 'Execution run');
+    const idempotencyKey = requiredIdempotencyKey(input.idempotencyKey);
+    const application = this.database.prepare(`
+      SELECT id, repository_root AS repositoryRoot, backup_manifest_json AS manifestJson,
+             reverted_at AS revertedAt
+      FROM execution_applications WHERE execution_run_id = ?
+    `).get(normalizedRunId);
+    if (!application) throw notFound('That execution did not change any files.');
+    if (application.revertedAt) throw conflict('That execution was already reverted.');
+    const restored = await revertApplication({
+      repositoryRoot: application.repositoryRoot,
+      backupDirectory: this.executionBackupDirectory(normalizedRunId),
+      manifest: JSON.parse(application.manifestJson),
+    });
+    const { value } = mutation(this.database, {
+      idempotencyKey,
+      operation: 'execution.revert',
+      request: { runId: normalizedRunId, actorId },
+    }, () => {
+      const revertedAt = now();
+      this.database.prepare(`
+        UPDATE execution_applications SET reverted_at = ? WHERE id = ? AND reverted_at = ''
+      `).run(revertedAt, application.id);
+      appendAudit(this.database, {
+        eventType: 'EXECUTION_REVERTED', resourceType: 'EXECUTION_RUN', resourceId: normalizedRunId,
+        actorId, details: { files: restored.length },
+      });
+      return this.requireExecutionRun(normalizedRunId);
+    });
+    return value;
+  }
+
   requireExecutionRun(id) {
     const row = this.database.prepare(`
       SELECT er.id, er.work_package_version_id AS workPackageVersionId, er.adapter, er.provider,
@@ -1377,10 +1436,12 @@ export class PlanningService {
              er.started_at AS startedAt, er.completed_at AS completedAt,
              er.row_version AS rowVersion, p.display_name AS displayName,
              ecs.id AS changeSetId, ecs.diff, ecs.diff_sha256 AS diffSha256,
-             ecs.file_count AS fileCount, ecs.created_at AS changeSetCreatedAt
+             ecs.file_count AS fileCount, ecs.created_at AS changeSetCreatedAt,
+             ea.applied_at AS appliedAt, ea.reverted_at AS revertedAt
       FROM execution_runs er
       JOIN participants p ON p.id = er.participant_id
       LEFT JOIN execution_change_sets ecs ON ecs.execution_run_id = er.id
+      LEFT JOIN execution_applications ea ON ea.execution_run_id = er.id
       WHERE er.id = ?
     `).get(id);
     if (!row) throw notFound('Execution run not found.');
@@ -1473,6 +1534,12 @@ export class PlanningService {
     try {
       const result = await adapter.execute({ content, repositoryRoot, signal: controller.signal });
       const changeSet = buildChangeSet(result?.diff);
+      // The owner approved this package; applying it is the authorized act.
+      // Every touched file is snapshotted first so revert never needs git.
+      const backupDirectory = this.executionBackupDirectory(run.id);
+      const application = changeSet.fileCount
+        ? await applyChangeSet({ repositoryRoot, backupDirectory, diff: changeSet.diff })
+        : { applied: false, manifest: [] };
       const completedAt = now();
       transaction(this.database, () => {
         const current = this.requireExecutionRun(run.id);
@@ -1490,8 +1557,21 @@ export class PlanningService {
           SET status = 'SUCCEEDED', completed_at = ?, row_version = row_version + 1
           WHERE id = ? AND status = 'RUNNING'
         `).run(completedAt, run.id);
+        if (application.applied) {
+          this.database.prepare(`
+            INSERT INTO execution_applications(
+              id, execution_run_id, work_package_version_id, diff_sha256, file_count,
+              repository_root, backup_manifest_json, applied_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            randomUUID(), run.id, run.workPackageVersionId, changeSet.diffSha256,
+            changeSet.fileCount, repositoryRoot, JSON.stringify(application.manifest), completedAt,
+          );
+        }
         appendAudit(this.database, {
-          eventType: 'EXECUTION_CHANGE_SET_RECORDED', resourceType: 'EXECUTION_RUN', resourceId: run.id,
+          eventType: application.applied ? 'EXECUTION_CHANGE_SET_APPLIED' : 'EXECUTION_CHANGE_SET_RECORDED',
+          resourceType: 'EXECUTION_RUN',
+          resourceId: run.id,
           actorId: null,
           details: { fileCount: changeSet.fileCount, diffSha256: changeSet.diffSha256 },
         });

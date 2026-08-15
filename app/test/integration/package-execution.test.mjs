@@ -1,5 +1,11 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { readFile, rm, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import test from 'node:test';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 import {
   addOwnerMessage,
@@ -15,20 +21,20 @@ import {
 
 async function seededDiscussion(t) {
   const fixture = await createFixture(t, { enableDeterministic: true });
-  const { discussion } = await createProjectAndDiscussion(fixture);
+  const { discussion, repositoryRoot } = await createProjectAndDiscussion(fixture);
   const message = addOwnerMessage(fixture.service, discussion.id);
   captureAndAcceptPoint(fixture.service, message.id);
-  return { fixture, discussion };
+  return { fixture, discussion, repositoryRoot };
 }
 
 async function approvedWorkspace(t, outcome) {
-  const { fixture, discussion } = await seededDiscussion(t);
+  const { fixture, discussion, repositoryRoot } = await seededDiscussion(t);
   const version = approveCompleteDraft(
     fixture.service,
     discussion.id,
     completePackageContent(outcome ? { outcome } : {}),
   );
-  return { fixture, discussion, version };
+  return { fixture, discussion, version, repositoryRoot };
 }
 
 function dispatch(fixture, versionId, overrides = {}) {
@@ -39,8 +45,8 @@ function dispatch(fixture, versionId, overrides = {}) {
   }, 'owner-local');
 }
 
-test('dispatching an approved version records an immutable change set and never writes files', async t => {
-  const { fixture, discussion, version } = await approvedWorkspace(t);
+test('dispatching an approved version applies its change set and records what was written', async t => {
+  const { fixture, discussion, version, repositoryRoot } = await approvedWorkspace(t);
   const started = await dispatch(fixture, version.id);
   assert.equal(started.status, 'RUNNING');
   assert.equal(started.changeSet, null);
@@ -65,8 +71,64 @@ test('dispatching an approved version records an immutable change set and never 
     'DELETE FROM execution_change_sets WHERE execution_run_id = ?',
   ).run(started.id), /cannot be deleted/);
 
+  // The approved package authorized this, so the file really exists now.
+  const written = path.join(repositoryRoot, 'PLANNED_WORK.md');
+  assert.match(await readFile(written, 'utf8'), /^# Produce one immutable/);
+  assert.equal(finished.appliedAt !== '', true);
+  assert.equal(finished.revertedAt, '');
+
+  assert.throws(() => fixture.database.prepare(
+    'DELETE FROM execution_applications WHERE execution_run_id = ?',
+  ).run(started.id), /cannot be deleted/);
+
   const invariants = fixture.service.verifyInvariants();
-  assert.equal(invariants.passed.length, 21);
+  assert.equal(invariants.passed.length, 23);
+
+  // Undo belongs to Andamento, not to git.
+  const reverted = await fixture.service.revertExecution(started.id, {
+    idempotencyKey: idempotencyKey('revert'),
+  }, 'owner-local');
+  assert.notEqual(reverted.revertedAt, '');
+  await assert.rejects(readFile(written, 'utf8'), /ENOENT/);
+  await assert.rejects(
+    () => fixture.service.revertExecution(started.id, { idempotencyKey: idempotencyKey('revert-again') }, 'owner-local'),
+    error => {
+      assert.equal(error.status, 409);
+      return true;
+    },
+  );
+  assert.equal(fixture.service.verifyInvariants().passed.length, 23);
+});
+
+test('a change set that does not apply cleanly changes nothing', async t => {
+  const { fixture, discussion, version, repositoryRoot } = await approvedWorkspace(t);
+  // A pre-existing file makes the new-file patch impossible to apply.
+  const ownerContent = 'owner content\n';
+  await writeFile(path.join(repositoryRoot, 'PLANNED_WORK.md'), ownerContent, 'utf8');
+  const started = await dispatch(fixture, version.id);
+  const failed = await waitForExecution(fixture.service, discussion.id, started.id, 'FAILED');
+  assert.equal(failed.errorCode, 'CHANGE_SET_DID_NOT_APPLY');
+  assert.equal(failed.changeSet, null);
+  assert.equal(
+    await readFile(path.join(repositoryRoot, 'PLANNED_WORK.md'), 'utf8'),
+    ownerContent,
+    'the owner file is untouched',
+  );
+  assert.equal(fixture.service.verifyInvariants().passed.length, 23);
+});
+
+test('an execution that overwrites an existing file can be reverted to its exact prior content', async t => {
+  const { fixture, discussion, version, repositoryRoot } = await approvedWorkspace(t);
+  const target = path.join(repositoryRoot, 'PLANNED_WORK.md');
+  await writeFile(target, 'owner content\n', 'utf8');
+  await execFileAsync('git', ['add', 'PLANNED_WORK.md'], { cwd: repositoryRoot });
+  await execFileAsync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'seed'], { cwd: repositoryRoot });
+  await rm(target);
+  const started = await dispatch(fixture, version.id);
+  const finished = await waitForExecution(fixture.service, discussion.id, started.id, 'SUCCEEDED');
+  assert.notEqual(finished.appliedAt, '');
+  await fixture.service.revertExecution(started.id, { idempotencyKey: idempotencyKey('revert') }, 'owner-local');
+  await assert.rejects(readFile(target, 'utf8'), /ENOENT/);
 });
 
 test('a draft version cannot be dispatched at the service or the storage boundary', async t => {
@@ -140,7 +202,7 @@ test('a failed execution records no change set and stays retryable', async t => 
   assert.equal(failed.changeSet, null);
   assert.equal(failed.errorCode, 'DETERMINISTIC_FAILURE');
   assert.doesNotMatch(failed.errorMessage, /stack|at Object|internal/i);
-  assert.equal(fixture.service.verifyInvariants().passed.length, 21);
+  assert.equal(fixture.service.verifyInvariants().passed.length, 23);
 });
 
 test('a malformed or escaping change set is refused rather than recorded', async t => {
@@ -191,6 +253,6 @@ test('an execution interrupted by a restart is reported, not silently lost', asy
   assert.equal(recovered.status, 'INTERRUPTED');
   assert.equal(recovered.changeSet, null);
   assert.match(recovered.errorMessage, /restarted/i);
-  assert.equal(fixture.service.verifyInvariants().passed.length, 21);
+  assert.equal(fixture.service.verifyInvariants().passed.length, 23);
   assert.equal(fixture.service.requirePackageVersion(version.id).status, 'READY_FOR_EXECUTION');
 });

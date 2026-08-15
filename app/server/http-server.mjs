@@ -203,10 +203,12 @@ async function routeApi(service, request, response, url) {
     sendJson(response, 201, { run });
     return true;
   }
-  params = routeMatch(pathname, /^\/api\/execution-runs\/(?<runId>[^/]+)\/cancel$/);
+  params = routeMatch(pathname, /^\/api\/execution-runs\/(?<runId>[^/]+)\/(?<action>cancel|revert)$/);
   if (params && request.method === 'POST') {
     const input = await readJsonBody(request);
-    const run = service.cancelExecution(params.runId, input, actorFor(service, request));
+    const run = params.action === 'cancel'
+      ? service.cancelExecution(params.runId, input, actorFor(service, request))
+      : await service.revertExecution(params.runId, input, actorFor(service, request));
     sendJson(response, 200, { run });
     return true;
   }
