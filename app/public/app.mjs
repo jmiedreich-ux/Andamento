@@ -576,9 +576,39 @@ function messageMarkup(message) {
             <span class="button-icon">${icon('source')}</span><span class="button-label"> Capture point</span>
           </button>
         </div>
+        ${suggestionsMarkup(message)}
         ${isCapture ? captureFormMarkup(message) : ''}
       </article>
     </li>`;
+}
+
+function suggestionsMarkup(message) {
+  const pending = (state.detail.suggestions || []).filter(item => item.sourceMessageId === message.id);
+  const busy = isBusy(`suggest:${message.id}`);
+  const capabilities = state.bootstrap.capabilities;
+  const adapter = capabilities.claude?.available ? 'claude'
+    : capabilities.codex?.available ? 'codex'
+      : capabilities.deterministic?.available ? 'deterministic' : '';
+  const ask = adapter
+    ? `<button type="button" class="text-action" data-action="suggest-points" data-message-id="${escapeHtml(message.id)}" data-adapter="${escapeHtml(adapter)}" ${busy ? 'disabled' : ''}>${busy ? 'Reading…' : 'Suggest points'}</button>`
+    : '';
+  if (!pending.length) return ask ? `<div class="suggestion-ask">${ask}</div>` : '';
+  return `
+    <section class="suggestion-set" aria-label="Proposed planning points">
+      <p class="suggestion-note">${escapeHtml(pending[0].displayName)} proposed ${pending.length} candidate${pending.length === 1 ? '' : 's'}. Nothing is a planning point until you capture it.</p>
+      <ul class="suggestion-list">
+        ${pending.map(item => `
+          <li class="suggestion">
+            <span class="suggestion-type">${escapeHtml(item.pointType.replaceAll('_', ' '))}</span>
+            <span class="suggestion-text">${escapeHtml(item.text)}</span>
+            <span class="suggestion-actions">
+              <button type="button" data-action="capture-suggestion" data-suggestion-id="${escapeHtml(item.id)}" ${isBusy(`suggestion:${item.id}`) ? 'disabled' : ''}>Capture</button>
+              <button type="button" class="text-action" data-action="dismiss-suggestion" data-suggestion-id="${escapeHtml(item.id)}" ${isBusy(`suggestion:${item.id}`) ? 'disabled' : ''}>Dismiss</button>
+            </span>
+          </li>`).join('')}
+      </ul>
+      ${ask}
+    </section>`;
 }
 
 function captureDraft(message) {
@@ -1518,6 +1548,7 @@ function detailFingerprint(detail) {
     messages: detail.messages.map(message => message.id),
     runs: detail.runs.map(run => [run.id, run.status, run.rowVersion]),
     points: detail.points.map(point => [point.id, point.disposition, point.rowVersion]),
+    suggestions: (detail.suggestions || []).map(item => item.id),
     versions: detail.workPackage?.versions.map(version => [version.id, version.status, version.rowVersion]) || [],
     approvals: detail.workPackage?.approvals.map(approval => approval.id) || [],
     codexAvailability: [
@@ -2636,6 +2667,40 @@ document.addEventListener('click', event => {
       method: 'POST',
       body: { idempotencyKey: operationKey(operationSlot, 'execution-revert', { target, payload: {} }) },
     }), { successMessage: 'Those files were restored to their previous contents.', operationSlot });
+  }
+  if (action === 'suggest-points') {
+    const messageId = button.dataset.messageId;
+    if (isBusy(`suggest:${messageId}`)) return;
+    const operationSlot = `suggest:${messageId}:${button.dataset.adapter}`;
+    const target = `/api/messages/${encodeURIComponent(messageId)}/point-suggestions`;
+    const payload = { adapter: button.dataset.adapter };
+    void withMutation(`suggest:${messageId}`, () => api(target, {
+      method: 'POST',
+      body: { ...payload, idempotencyKey: operationKey(operationSlot, 'suggest', { target, payload }) },
+    }), { successMessage: 'Candidates proposed for your decision.', operationSlot });
+  }
+  if (action === 'capture-suggestion') {
+    const suggestionId = button.dataset.suggestionId;
+    if (isBusy(`suggestion:${suggestionId}`)) return;
+    const suggestion = (state.detail.suggestions || []).find(item => item.id === suggestionId);
+    if (!suggestion) return;
+    const operationSlot = `capture-suggestion:${suggestionId}`;
+    const target = `/api/messages/${encodeURIComponent(suggestion.sourceMessageId)}/planning-points`;
+    const payload = { pointType: suggestion.pointType, text: suggestion.text, suggestionId };
+    void withMutation(`suggestion:${suggestionId}`, () => api(target, {
+      method: 'POST',
+      body: { ...payload, idempotencyKey: operationKey(operationSlot, 'point', { target, payload }) },
+    }), { successMessage: 'Planning point proposed for owner decision.', operationSlot });
+  }
+  if (action === 'dismiss-suggestion') {
+    const suggestionId = button.dataset.suggestionId;
+    if (isBusy(`suggestion:${suggestionId}`)) return;
+    const operationSlot = `dismiss-suggestion:${suggestionId}`;
+    const target = `/api/point-suggestions/${encodeURIComponent(suggestionId)}/dismiss`;
+    void withMutation(`suggestion:${suggestionId}`, () => api(target, {
+      method: 'POST',
+      body: { idempotencyKey: operationKey(operationSlot, 'suggest-dismiss', { target, payload: {} }) },
+    }), { successMessage: 'Candidate dismissed.', operationSlot });
   }
   if (action === 'right-tab') {
     state.rightTab = button.dataset.tab;

@@ -1,3 +1,4 @@
+import { SUGGESTION_INSTRUCTIONS, buildSuggestionPrompt } from './suggestions.mjs';
 import Anthropic, {
   APIConnectionError,
   APIError,
@@ -72,7 +73,16 @@ export class AnthropicPlanningAgent {
     return this.configured();
   }
 
-  async contribute({ prompt, signal }) {
+  async suggest({ content, signal }) {
+    const contribution = await this.contribute({
+      prompt: buildSuggestionPrompt(content),
+      signal,
+      instructions: SUGGESTION_INSTRUCTIONS,
+    });
+    return { provider: contribution.provider, model: contribution.model, text: contribution.content };
+  }
+
+  async contribute({ prompt, signal, instructions }) {
     if (!this.configured()) {
       throw failure('No Anthropic credential is configured.', 'CLAUDE_NOT_CONFIGURED');
     }
@@ -81,7 +91,7 @@ export class AnthropicPlanningAgent {
       message = await this.client.messages.create({
         model: this.model,
         max_tokens: this.maxTokens,
-        system: PLANNING_INSTRUCTIONS,
+        system: instructions || PLANNING_INSTRUCTIONS,
         messages: [{ role: 'user', content: prompt }],
       }, { signal });
     } catch (error) {

@@ -24,6 +24,7 @@ import {
 } from './domain/validation.mjs';
 import { appendAudit, mutation, now, transaction } from './storage/database.mjs';
 import { buildChangeSet } from './execution/change-set.mjs';
+import { parseSuggestions } from './agents/suggestions.mjs';
 import { applyChangeSet, revertApplication } from './execution/apply.mjs';
 
 const OWNER_ID = 'owner-local';
@@ -715,6 +716,15 @@ export class PlanningService {
       `).run(point.id, point.discussionId, point.sourceMessageId, point.createdByParticipantId, point.pointType, point.text, point.createdAt);
       this.touchDiscussion(point.discussionId, point.createdAt);
       this.retireDraftSlot(input.draftSlot);
+      if (input.suggestionId) {
+        const resolved = this.database.prepare(`
+          UPDATE point_suggestions SET status = 'CAPTURED', captured_point_id = ?, resolved_at = ?
+          WHERE id = ? AND status = 'PENDING' AND source_message_id = ?
+        `).run(point.id, point.createdAt, String(input.suggestionId), point.sourceMessageId);
+        if (Number(resolved.changes) !== 1) {
+          throw conflict('That suggestion was already resolved or belongs to another contribution.');
+        }
+      }
       appendAudit(this.database, {
         eventType: 'PLANNING_POINT_PROPOSED', resourceType: 'PLANNING_POINT', resourceId: point.id, actorId,
         details: { sourceMessageId: source.id, pointType },
@@ -1036,6 +1046,106 @@ export class PlanningService {
 
   // Working input the owner has not confirmed yet. Held durably so a reload or
   // a restart cannot discard it, and deleted the moment its mutation confirms.
+  // Ask a participant to read one contribution and propose candidates. Nothing
+  // recorded here is a planning point: candidates carry no disposition and no
+  // authority, and only the owner's capture turns one into a proposal.
+  async suggestPoints(messageId, input = {}, actorId) {
+    this.assertOwner(actorId);
+    const normalizedMessageId = requiredId(messageId, 'Source contribution');
+    const adapterName = oneOf(input.adapter || 'claude', ['codex', 'claude', 'deterministic'], 'Agent adapter');
+    const adapter = this.agents.get(adapterName);
+    if (typeof adapter.suggest !== 'function') {
+      throw capabilityUnavailable(`The ${adapterName} participant cannot propose planning points.`, { adapter: adapterName });
+    }
+    const idempotencyKey = requiredIdempotencyKey(input.idempotencyKey);
+    const source = this.requireMessage(normalizedMessageId);
+    const context = this.requireDiscussionContext(source.discussionId);
+
+    let result;
+    try {
+      result = await adapter.suggest({ content: source.content, repositoryRoot: context.repositoryRoot });
+    } catch (error) {
+      const failure = safeAgentFailure(error, adapterName);
+      throw new AppError(502, failure.code, failure.message);
+    }
+    const candidates = parseSuggestions(result?.text);
+
+    const { value } = mutation(this.database, {
+      idempotencyKey,
+      operation: 'point-suggestions.create',
+      request: { messageId: normalizedMessageId, actorId, adapter: adapterName },
+    }, () => {
+      const participant = this.ensureParticipant({
+        participantKey: `agent:${adapter.provider}:${adapter.model}:${adapter.id}`,
+        kind: 'AGENT',
+        displayName: adapter.displayName,
+        provider: adapter.provider,
+        model: adapter.model,
+      });
+      const createdAt = now();
+      const insert = this.database.prepare(`
+        INSERT INTO point_suggestions(
+          id, source_message_id, discussion_id, participant_id, point_type, text, status, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?)
+      `);
+      const stored = candidates.map(candidate => {
+        const id = randomUUID();
+        insert.run(
+          id, normalizedMessageId, source.discussionId, participant.id,
+          oneOf(candidate.pointType, POINT_TYPES, 'Planning point type'),
+          requiredText(candidate.text, 'Suggested planning point', { max: 2000 }),
+          createdAt,
+        );
+        return id;
+      });
+      appendAudit(this.database, {
+        eventType: 'POINT_SUGGESTIONS_PROPOSED', resourceType: 'MESSAGE', resourceId: normalizedMessageId,
+        actorId,
+        details: { adapter: adapterName, count: stored.length },
+      });
+      return { messageId: normalizedMessageId, count: stored.length };
+    });
+    return { ...value, suggestions: this.listSuggestions(source.discussionId) };
+  }
+
+  listSuggestions(discussionId) {
+    return this.database.prepare(`
+      SELECT ps.id, ps.source_message_id AS sourceMessageId, ps.point_type AS pointType,
+             ps.text, ps.status, ps.captured_point_id AS capturedPointId,
+             ps.created_at AS createdAt, p.display_name AS displayName,
+             p.provider, p.model
+      FROM point_suggestions ps
+      JOIN participants p ON p.id = ps.participant_id
+      WHERE ps.discussion_id = ? AND ps.status = 'PENDING'
+      ORDER BY ps.created_at, ps.rowid
+    `).all(discussionId);
+  }
+
+  dismissSuggestion(suggestionId, input = {}, actorId) {
+    this.assertOwner(actorId);
+    const normalizedId = requiredId(suggestionId, 'Suggestion');
+    const idempotencyKey = requiredIdempotencyKey(input.idempotencyKey);
+    const { value } = mutation(this.database, {
+      idempotencyKey,
+      operation: 'point-suggestion.dismiss',
+      request: { suggestionId: normalizedId, actorId },
+    }, () => {
+      const row = this.database.prepare('SELECT id, discussion_id AS discussionId, status FROM point_suggestions WHERE id = ?')
+        .get(normalizedId);
+      if (!row) throw notFound('That suggestion is no longer available.');
+      if (row.status !== 'PENDING') throw conflict('That suggestion was already resolved.');
+      this.database.prepare(`
+        UPDATE point_suggestions SET status = 'DISMISSED', resolved_at = ? WHERE id = ? AND status = 'PENDING'
+      `).run(now(), normalizedId);
+      appendAudit(this.database, {
+        eventType: 'POINT_SUGGESTION_DISMISSED', resourceType: 'MESSAGE', resourceId: normalizedId,
+        actorId, details: {},
+      });
+      return { id: normalizedId, discussionId: row.discussionId };
+    });
+    return { ...value, suggestions: this.listSuggestions(value.discussionId) };
+  }
+
   // Retiring the draft inside the mutation that made the input durable removes
   // any window where a reload could offer back work that already committed.
   retireDraftSlot(slot) {
@@ -1278,6 +1388,7 @@ export class PlanningService {
         ...packageRow, versions, currentVersion: versions[0] || null, approvals, executions,
       };
     }
+    const suggestions = this.listSuggestions(id);
     const codexQuarantine = this.findCodexCleanupQuarantine({
       discussionId: id,
       threadId: discussionRow.codexThreadId,
@@ -1292,7 +1403,7 @@ export class PlanningService {
           : '',
       },
     };
-    return { project, discussion, messages, runs, points, workPackage, agentAvailability };
+    return { project, discussion, messages, runs, points, suggestions, workPackage, agentAvailability };
   }
 
   verifyInvariants() {
@@ -1426,6 +1537,19 @@ export class PlanningService {
                   OR ar.status <> 'INTERRUPTED'
                   OR ar.completed_at IS NOT NULL
                 )`,
+      },
+      {
+        name: 'captured suggestions name the point they became',
+        sql: `SELECT ps.id FROM point_suggestions ps
+              LEFT JOIN planning_points pp ON pp.id = ps.captured_point_id
+              WHERE (ps.status = 'CAPTURED' AND (pp.id IS NULL OR pp.source_message_id <> ps.source_message_id))
+                 OR (ps.status <> 'CAPTURED' AND ps.captured_point_id IS NOT NULL)`,
+      },
+      {
+        name: 'suggestions never carry owner authority',
+        sql: `SELECT ps.id FROM point_suggestions ps
+              JOIN participants p ON p.id = ps.participant_id
+              WHERE p.kind = 'OWNER'`,
       },
       {
         name: 'executions dispatch only approved versions',

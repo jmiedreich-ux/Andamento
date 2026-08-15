@@ -49,6 +49,29 @@ export class DeterministicPlanningAgent {
     };
   }
 
+  async suggest({ content, signal }) {
+    await delay(/\[slow\]/i.test(content) ? 850 : 60, undefined, { signal });
+    if (/\[fail\]/i.test(content)) {
+      const error = new Error('The deterministic participant could not read that contribution.');
+      error.code = 'DETERMINISTIC_FAILURE';
+      throw error;
+    }
+    if (/\[no-points\]/i.test(content)) {
+      return { provider: this.provider, model: this.model, text: '' };
+    }
+    const sentences = String(content).split(/(?<=[.!?])\s+/)
+      .map(sentence => sentence.trim())
+      .filter(sentence => sentence.length >= 12)
+      .slice(0, 3);
+    return {
+      provider: this.provider,
+      model: this.model,
+      text: sentences.map((sentence, index) => (
+        `${index === 0 ? 'REQUIREMENT' : index === 1 ? 'RISK' : 'QUESTION'}|${sentence.replace(/\s+/g, ' ')}`
+      )).join('\n'),
+    };
+  }
+
   async contribute({ prompt, retryOfRunId, signal }) {
     const wait = /\[slow\]/i.test(prompt) ? 850 : 120;
     await delay(wait, undefined, { signal });

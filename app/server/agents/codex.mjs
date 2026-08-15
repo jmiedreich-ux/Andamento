@@ -1,4 +1,5 @@
 import { buildExecutionPrompt } from '../execution/change-set.mjs';
+import { SUGGESTION_INSTRUCTIONS, buildSuggestionPrompt } from './suggestions.mjs';
 
 const EXECUTION_INSTRUCTIONS = [
   'You are proposing a change set for an already owner-approved work package inside Andamento.',
@@ -267,6 +268,18 @@ export class CodexPlanningAgent {
       instructions: EXECUTION_INSTRUCTIONS,
     });
     return { provider: contribution.provider, model: contribution.model, diff: contribution.content };
+  }
+
+  async suggest({ content, repositoryRoot, signal }) {
+    const contribution = await this.contribute({
+      prompt: buildSuggestionPrompt(content),
+      repositoryRoot,
+      threadId: '',
+      onThread: () => {},
+      signal,
+      instructions: SUGGESTION_INSTRUCTIONS,
+    });
+    return { provider: contribution.provider, model: contribution.model, text: contribution.content };
   }
 
   async contribute({ prompt, repositoryRoot, threadId, onThread, signal, instructions }) {

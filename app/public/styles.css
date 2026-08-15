@@ -2063,3 +2063,56 @@ a.header-value {
   border-top: 1px solid var(--rule);
   font-size: 0.86rem;
 }
+
+/* Agent-proposed candidates: never planning points until the owner captures. */
+.suggestion-ask {
+  margin-top: 8px;
+}
+
+.suggestion-set {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px dashed var(--rule-strong);
+  background: rgba(235, 227, 237, 0.4);
+}
+
+.suggestion-note {
+  margin: 0 0 8px;
+  color: var(--graphite-soft);
+  font-size: 0.8rem;
+}
+
+.suggestion-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.suggestion {
+  display: grid;
+  gap: 4px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.suggestion-type {
+  color: var(--plum);
+  font-family: var(--font-data);
+  font-size: 0.68rem;
+  font-weight: 650;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+
+.suggestion-text {
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.suggestion-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
+}

@@ -61,7 +61,7 @@ test('validates repository roots and stores only canonical local Git repositorie
   const failed = await waitForRun(fixture.service, discussion.id, unavailable.id, 'FAILED');
   assert.equal(failed.errorCode, 'REPOSITORY_UNAVAILABLE');
   assert.equal(failed.errorMessage, 'The registered Git repository is no longer available. Restore it before retrying.');
-  assert.deepEqual(fixture.service.verifyInvariants().passed.length, 23);
+  assert.deepEqual(fixture.service.verifyInvariants().passed.length, 25);
 });
 
 test('persists the planning loop on disk across a real application restart in WAL mode', async t => {
@@ -85,7 +85,7 @@ test('persists the planning loop on disk across a real application restart in WA
   assert.equal(fixture.database.prepare('PRAGMA journal_mode').get().journal_mode.toLowerCase(), 'wal');
   assert.equal(fixture.database.prepare('PRAGMA locking_mode').get().locking_mode.toLowerCase(), 'exclusive');
   assert.equal(Number(fixture.database.prepare('PRAGMA foreign_keys').get().foreign_keys), 1);
-  assert.equal(Number(fixture.database.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get().count), 7);
+  assert.equal(Number(fixture.database.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get().count), 8);
   await fixture.close();
   await fixture.open();
 
@@ -499,7 +499,7 @@ test('prepares and saves 100 accepted inputs but atomically refuses 101', async 
   `).get(overflowDiscussion.id);
   assert.deepEqual({ ...countsAfterRefusal }, { ...countsBeforeRefusal });
   assert.equal(Number(countsAfterRefusal.packages), 0);
-  assert.equal(fixture.service.verifyInvariants().passed.length, 23);
+  assert.equal(fixture.service.verifyInvariants().passed.length, 25);
 });
 
 test('denies non-owner decisions and approvals without changing durable authority records', async t => {
@@ -653,7 +653,7 @@ test('enforces immutable planning-point identity and owner decisions at SQLite a
   });
   fixture.database.exec('ROLLBACK TO decided_point_tamper; RELEASE decided_point_tamper;');
   assert.equal(fixture.service.requirePoint(point.id).disposition, 'ACCEPTED');
-  assert.equal(fixture.service.verifyInvariants().passed.length, 23);
+  assert.equal(fixture.service.verifyInvariants().passed.length, 25);
 });
 
 test('refuses incomplete approval without losing valid input, then locks one approval and clones version 2', async t => {
@@ -1195,7 +1195,7 @@ test('cancelling before Codex provider invocation never creates a cleanup quaran
   assert.equal(providerCalls, 0);
   const durableRun = fixture.service.getDiscussion(discussion.id).runs.find(candidate => candidate.id === run.id);
   assert.equal(durableRun.errorCode, 'CANCELLED');
-  assert.equal(fixture.service.verifyInvariants().passed.length, 23);
+  assert.equal(fixture.service.verifyInvariants().passed.length, 25);
 });
 
 test('shutdown before Codex provider invocation remains safely retryable', async t => {
@@ -1242,7 +1242,7 @@ test('shutdown before Codex provider invocation remains safely retryable', async
   assert.equal(fixture.service.getDiscussion(discussion.id).agentAvailability.codex.blocked, false);
   await completion;
   assert.equal(providerCalls, 0);
-  assert.equal(fixture.service.verifyInvariants().passed.length, 23);
+  assert.equal(fixture.service.verifyInvariants().passed.length, 25);
 });
 
 test('restart recovery quarantines crashed Codex runs while preserving deterministic retry', async t => {
@@ -1364,7 +1364,7 @@ test('restart recovery quarantines crashed Codex runs while preserving determini
       reason: 'SERVICE_RESTARTED',
     },
   ]);
-  assert.equal(fixture.service.verifyInvariants().passed.length, 23);
+  assert.equal(fixture.service.verifyInvariants().passed.length, 25);
 });
 
 test('durably quarantines a room and shared thread when Codex cleanup cannot be confirmed', async t => {
@@ -1512,7 +1512,7 @@ test('durably quarantines a room and shared thread when Codex cleanup cannot be 
   `).get(unsafe.id);
   assert.equal(cleanupAudit.eventType, 'AGENT_CLEANUP_UNCONFIRMED');
   assert.equal(JSON.parse(cleanupAudit.detailsJson).code, 'CODEX_CLEANUP_UNCONFIRMED');
-  assert.equal(fixture.service.verifyInvariants().passed.length, 23);
+  assert.equal(fixture.service.verifyInvariants().passed.length, 25);
 });
 
 test('shutdown timeout durably quarantines a Codex turn whose cleanup is still pending', async t => {
@@ -1593,7 +1593,7 @@ test('shutdown timeout durably quarantines a Codex turn whose cleanup is still p
   assert.match(quarantined.errorMessage, /could not confirm that the Codex contribution stopped/);
   assert.equal(cancelledQuarantined.status, 'INTERRUPTED');
   assert.equal(cancelledQuarantined.errorCode, 'CODEX_CLEANUP_UNCONFIRMED');
-  assert.equal(fixture.service.verifyInvariants().passed.length, 23);
+  assert.equal(fixture.service.verifyInvariants().passed.length, 25);
 
   releaseProvider();
   await providerReturned;

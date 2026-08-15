@@ -82,7 +82,7 @@ test('dispatching an approved version applies its change set and records what wa
   ).run(started.id), /cannot be deleted/);
 
   const invariants = fixture.service.verifyInvariants();
-  assert.equal(invariants.passed.length, 23);
+  assert.equal(invariants.passed.length, 25);
 
   // Undo belongs to Andamento, not to git.
   const reverted = await fixture.service.revertExecution(started.id, {
@@ -97,7 +97,7 @@ test('dispatching an approved version applies its change set and records what wa
       return true;
     },
   );
-  assert.equal(fixture.service.verifyInvariants().passed.length, 23);
+  assert.equal(fixture.service.verifyInvariants().passed.length, 25);
 });
 
 test('a change set that does not apply cleanly changes nothing', async t => {
@@ -114,7 +114,7 @@ test('a change set that does not apply cleanly changes nothing', async t => {
     ownerContent,
     'the owner file is untouched',
   );
-  assert.equal(fixture.service.verifyInvariants().passed.length, 23);
+  assert.equal(fixture.service.verifyInvariants().passed.length, 25);
 });
 
 test('an execution that overwrites an existing file can be reverted to its exact prior content', async t => {
@@ -202,7 +202,7 @@ test('a failed execution records no change set and stays retryable', async t => 
   assert.equal(failed.changeSet, null);
   assert.equal(failed.errorCode, 'DETERMINISTIC_FAILURE');
   assert.doesNotMatch(failed.errorMessage, /stack|at Object|internal/i);
-  assert.equal(fixture.service.verifyInvariants().passed.length, 23);
+  assert.equal(fixture.service.verifyInvariants().passed.length, 25);
 });
 
 test('a malformed or escaping change set is refused rather than recorded', async t => {
@@ -253,6 +253,6 @@ test('an execution interrupted by a restart is reported, not silently lost', asy
   assert.equal(recovered.status, 'INTERRUPTED');
   assert.equal(recovered.changeSet, null);
   assert.match(recovered.errorMessage, /restarted/i);
-  assert.equal(fixture.service.verifyInvariants().passed.length, 23);
+  assert.equal(fixture.service.verifyInvariants().passed.length, 25);
   assert.equal(fixture.service.requirePackageVersion(version.id).status, 'READY_FOR_EXECUTION');
 });

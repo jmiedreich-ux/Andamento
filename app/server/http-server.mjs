@@ -166,6 +166,18 @@ async function routeApi(service, request, response, url) {
     sendJson(response, 201, service.capturePoint(params.messageId, input, actorFor(service, request)));
     return true;
   }
+  params = routeMatch(pathname, /^\/api\/messages\/(?<messageId>[^/]+)\/point-suggestions$/);
+  if (params && request.method === 'POST') {
+    const input = await readJsonBody(request);
+    sendJson(response, 201, await service.suggestPoints(params.messageId, input, actorFor(service, request)));
+    return true;
+  }
+  params = routeMatch(pathname, /^\/api\/point-suggestions\/(?<suggestionId>[^/]+)\/dismiss$/);
+  if (params && request.method === 'POST') {
+    const input = await readJsonBody(request);
+    sendJson(response, 200, service.dismissSuggestion(params.suggestionId, input, actorFor(service, request)));
+    return true;
+  }
   params = routeMatch(pathname, /^\/api\/planning-points\/(?<pointId>[^/]+)\/(?<action>replacement|disposition)$/);
   if (params && request.method === 'POST') {
     const input = await readJsonBody(request);

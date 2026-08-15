@@ -10,7 +10,7 @@
 - **Existing prototype:** Google Sheets, Apps Script, and the Codex relay remain behavioral and integration evidence only. They are neither the intended authoritative backend nor visual design inputs for the new product.
 - **Repository state:** Private GitHub repository `https://github.com/jmiedreich-ux/Andamento`. `main` is the only branch; `feature/planning-loop-m1` was fast-forwarded onto it with history intact and deleted, and draft PR [#1](https://github.com/jmiedreich-ux/Andamento/pull/1) closed as merged.
 - **Implementation state:** The planning loop runs end to end on `main`: project registration, planning rooms, owner/Claude/Codex/imported contributions, source-linked points, owner disposition, versioned packages, explicit approval, dispatch to a proposed change set, apply with revert, and a cross-project home view of outstanding work.
-- **Verification state:** `npm test` 78/78, `npm run test:e2e` 10/10, `npm audit --audit-level=high` 0 vulnerabilities, 23 runtime invariants passing, seven ordered migrations. Execution and live Claude were both exercised against real providers, not only fixtures.
+- **Verification state:** `npm test` 86/86, `npm run test:e2e` 10/10, `npm audit --audit-level=high` 0 vulnerabilities, 25 runtime invariants passing, eight ordered migrations. Execution and live Claude were both exercised against real providers, not only fixtures.
 - **Review state:** No independent review covers the execution, apply/revert, Claude, or home-view work. The earlier review round covered a superseded commit.
 - **CI state:** Not configured. Local validation is the gate.
 
@@ -24,10 +24,9 @@ Nothing is authorized until the owner picks it.
 
 - Open a GitHub pull request straight from an approved package
 - Record evidence (test output, review verdict) against the exact approved version
-- Agent proposes candidate planning points from a contribution; the owner accepts or rejects
 - Export a package as Markdown or JSON
 - Folder picker for repository roots instead of a typed path
-- Ask two agents the same question and compare answers side by side
+- Ask two agents the same question and compare answers side by side, then let them read and challenge each other
 - Search across rooms and points
 - Package decomposition: one package spawns child packages
 - Recorded from review, not yet authorized: errors are announced twice (assertive live region plus the `role="alert"` banner); static-file containment is lexical rather than `realpath`-based; provider text is unbounded until the persist-time cap; `mutation_receipts` has no retention policy; the tabbed-station breakpoint is 1279px while the approved design says 1439px
