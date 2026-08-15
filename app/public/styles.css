@@ -251,6 +251,7 @@ h3 {
 }
 
 .registration-mark {
+  display: inline-flex;
   width: 24px;
   height: 24px;
   flex: 0 0 auto;
