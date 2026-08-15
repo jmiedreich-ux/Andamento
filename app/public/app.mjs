@@ -44,6 +44,7 @@ const state = {
   bootstrapRequestSequence: 0,
   bootstrapLoadGeneration: 0,
   routeNotice: '',
+  home: null,
   mutationKeys: new Map(),
   pendingRefreshOperations: new Map(),
   pendingDraftRecoveries: new Map(),
@@ -346,6 +347,102 @@ function renderBootstrapError() {
       <button type="button" class="primary-action" data-action="retry-bootstrap">Try local service again</button>
       <p class="lineage-footnote">No project, discussion, or package state was changed.</p>
     </section>`;
+}
+
+
+function homeItemMarkup({ href, label, detail, meta, tone = '' }) {
+  return `
+    <li class="home-item"${tone ? ` data-tone="${escapeHtml(tone)}"` : ''}>
+      <a class="home-item-link" href="${escapeHtml(href)}">${escapeHtml(label)}</a>
+      ${detail ? `<p class="home-item-detail">${escapeHtml(detail)}</p>` : ''}
+      <span class="home-item-meta">${escapeHtml(meta)}</span>
+    </li>`;
+}
+
+function homeSection(title, description, items) {
+  if (!items.length) return '';
+  return `
+    <section class="home-section" aria-labelledby="home-${title.replace(/\s+/g, '-').toLowerCase()}">
+      <div class="home-section-head">
+        <h2 id="home-${title.replace(/\s+/g, '-').toLowerCase()}">${escapeHtml(title)}</h2>
+        <span class="home-count">${items.length}</span>
+      </div>
+      <p class="home-section-note">${escapeHtml(description)}</p>
+      <ul class="home-list">${items.join('')}</ul>
+    </section>`;
+}
+
+function renderHome() {
+  const home = state.home;
+  const roomHref = item => `#/projects/${encodeURIComponent(item.projectId)}/discussions/${encodeURIComponent(item.discussionId)}`;
+  const where = item => `${item.projectName} · ${item.discussionTitle}`;
+  const sections = home ? [
+    homeSection(
+      'Decide these points',
+      'Captured proposals stay context until you accept, reject, or defer them.',
+      home.undecidedPoints.map(point => homeItemMarkup({
+        href: roomHref(point),
+        label: point.text,
+        meta: `${where(point)} · ${point.pointType.replaceAll('_', ' ')}`,
+      })),
+    ),
+    homeSection(
+      'Packages awaiting your approval',
+      'A draft becomes authorized work only when you approve one exact version.',
+      home.draftPackages.map(draft => homeItemMarkup({
+        href: roomHref(draft),
+        label: `v${draft.versionNumber} draft`,
+        detail: draft.readyToApprove
+          ? 'Complete and ready for the approval checkpoint.'
+          : draft.gaps.length
+            ? `Missing: ${draft.gaps.join(', ')}.`
+            : 'No accepted points are included yet.',
+        meta: `${where(draft)} · ${draft.sourceCount} accepted point${draft.sourceCount === 1 ? '' : 's'}`,
+        tone: draft.readyToApprove ? 'ready' : '',
+      })),
+    ),
+    homeSection(
+      'Approved and never dispatched',
+      'Approval marks a package ready; dispatch is a separate act.',
+      home.approvedNotDispatched.map(version => homeItemMarkup({
+        href: roomHref(version),
+        label: `v${version.versionNumber} ready for execution`,
+        meta: `${where(version)} · approved ${formatDate(version.approvedAt)}`,
+        tone: 'ready',
+      })),
+    ),
+    homeSection(
+      'Stopped and waiting',
+      'These stopped before finishing and will not resume on their own.',
+      home.stoppedWork.map(item => homeItemMarkup({
+        href: roomHref(item),
+        label: item.label,
+        meta: `${where(item)} · ${item.kind} ${item.status.toLowerCase()}`,
+        tone: 'attention',
+      })),
+    ),
+  ].filter(Boolean) : [];
+
+  app.innerHTML = `
+    <section class="home" aria-labelledby="homeTitle">
+      <div class="home-head">
+        <div>
+          <span class="station-label">Across every project</span>
+          <h1 id="homeTitle">${home && home.waitingCount ? `${home.waitingCount} thing${home.waitingCount === 1 ? '' : 's'} waiting on you` : 'Nothing is waiting on you'}</h1>
+        </div>
+        ${registrationMark()}
+      </div>
+      ${feedbackMarkup()}
+      ${sections.length ? sections.join('') : `
+        <div class="home-clear">
+          <h2>${home ? 'Every captured point is decided and every package is settled.' : 'The waiting list could not be loaded.'}</h2>
+          <p>${home ? 'Open a planning room to keep going.' : 'Andamento could not reach the local service.'}</p>
+        </div>`}
+      <ul class="home-projects" aria-label="Projects">
+        ${state.projects.map(project => `<li><a href="#/projects/${escapeHtml(project.id)}">${escapeHtml(project.name)}</a></li>`).join('')}
+      </ul>
+    </section>`;
+  app.focus({ preventScroll: true });
 }
 
 function renderNewProject() {
@@ -1176,6 +1273,7 @@ function render() {
   else if (state.phase === 'bootstrap-error') renderBootstrapError();
   else if (state.phase === 'new-project') renderNewProject();
   else if (state.phase === 'project') renderProjectRegister();
+  else if (state.phase === 'home') renderHome();
   else if (state.phase === 'workspace') renderWorkspace();
 }
 
@@ -1466,7 +1564,23 @@ async function syncRoute() {
     return;
   }
   if (route.name === 'home') {
-    location.replace(`#/projects/${state.projects[0].id}`);
+    state.phase = 'loading';
+    state.discussionId = '';
+    state.detail = null;
+    render();
+    try {
+      const home = await api('/api/home');
+      if (generation !== state.routeGeneration) return;
+      state.home = home;
+      state.phase = 'home';
+      render();
+    } catch (error) {
+      if (generation !== state.routeGeneration) return;
+      setFeedback(error.message, 'error', error.details);
+      state.home = null;
+      state.phase = 'home';
+      render();
+    }
     return;
   }
   const project = state.projects.find(item => item.id === route.projectId);

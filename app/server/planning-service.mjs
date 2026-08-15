@@ -1028,6 +1028,104 @@ export class PlanningService {
     return { version: value, replayed };
   }
 
+  // One cross-project answer to "what is waiting on the owner?". Every item is
+  // something only the owner can resolve, or work that stopped and needs a
+  // decision to continue.
+  getHome() {
+    const undecidedPoints = this.database.prepare(`
+      SELECT pp.id, pp.text, pp.point_type AS pointType, pp.created_at AS createdAt,
+             d.id AS discussionId, d.title AS discussionTitle,
+             pr.id AS projectId, pr.name AS projectName
+      FROM planning_points pp
+      JOIN discussions d ON d.id = pp.discussion_id
+      JOIN projects pr ON pr.id = d.project_id
+      WHERE pp.disposition = 'PROPOSED'
+      ORDER BY pp.created_at DESC
+    `).all();
+
+    const draftVersions = this.database.prepare(`
+      SELECT wpv.id, wpv.version_number AS versionNumber, wpv.content_json AS contentJson,
+             wpv.updated_at AS updatedAt,
+             d.id AS discussionId, d.title AS discussionTitle,
+             pr.id AS projectId, pr.name AS projectName,
+             (SELECT COUNT(*) FROM work_package_points wpp
+               WHERE wpp.work_package_version_id = wpv.id) AS sourceCount
+      FROM work_package_versions wpv
+      JOIN work_packages wp ON wp.id = wpv.work_package_id
+      JOIN discussions d ON d.id = wp.discussion_id
+      JOIN projects pr ON pr.id = d.project_id
+      WHERE wpv.status = 'DRAFT'
+      ORDER BY wpv.updated_at DESC
+    `).all().map(row => {
+      const content = JSON.parse(row.contentJson);
+      const gaps = packageApprovalGaps(content);
+      return {
+        id: row.id,
+        versionNumber: row.versionNumber,
+        updatedAt: row.updatedAt,
+        discussionId: row.discussionId,
+        discussionTitle: row.discussionTitle,
+        projectId: row.projectId,
+        projectName: row.projectName,
+        sourceCount: row.sourceCount,
+        gaps,
+        readyToApprove: gaps.length === 0 && row.sourceCount > 0,
+      };
+    });
+
+    const approvedNotDispatched = this.database.prepare(`
+      SELECT wpv.id, wpv.version_number AS versionNumber, wpv.approved_at AS approvedAt,
+             d.id AS discussionId, d.title AS discussionTitle,
+             pr.id AS projectId, pr.name AS projectName
+      FROM work_package_versions wpv
+      JOIN work_packages wp ON wp.id = wpv.work_package_id
+      JOIN discussions d ON d.id = wp.discussion_id
+      JOIN projects pr ON pr.id = d.project_id
+      WHERE wpv.status = 'READY_FOR_EXECUTION'
+        AND NOT EXISTS (
+          SELECT 1 FROM execution_runs er WHERE er.work_package_version_id = wpv.id
+        )
+      ORDER BY wpv.approved_at DESC
+    `).all();
+
+    const stoppedWork = [
+      ...this.database.prepare(`
+        SELECT ar.id, ar.status, ar.error_code AS errorCode, ar.prompt AS label,
+               ar.completed_at AS stoppedAt, 'contribution' AS kind,
+               d.id AS discussionId, d.title AS discussionTitle,
+               pr.id AS projectId, pr.name AS projectName
+        FROM agent_runs ar
+        JOIN discussions d ON d.id = ar.discussion_id
+        JOIN projects pr ON pr.id = d.project_id
+        WHERE ar.status IN ('FAILED', 'INTERRUPTED')
+          AND NOT EXISTS (SELECT 1 FROM agent_runs child WHERE child.retry_of_run_id = ar.id)
+      `).all(),
+      ...this.database.prepare(`
+        SELECT er.id, er.status, er.error_code AS errorCode,
+               'Execution of v' || wpv.version_number AS label,
+               er.completed_at AS stoppedAt, 'execution' AS kind,
+               d.id AS discussionId, d.title AS discussionTitle,
+               pr.id AS projectId, pr.name AS projectName
+        FROM execution_runs er
+        JOIN work_package_versions wpv ON wpv.id = er.work_package_version_id
+        JOIN discussions d ON d.id = er.discussion_id
+        JOIN projects pr ON pr.id = d.project_id
+        WHERE er.status IN ('FAILED', 'INTERRUPTED')
+      `).all(),
+    ].sort((left, right) => String(right.stoppedAt).localeCompare(String(left.stoppedAt)));
+
+    return {
+      undecidedPoints,
+      draftPackages: draftVersions,
+      approvedNotDispatched,
+      stoppedWork,
+      waitingCount: undecidedPoints.length
+        + draftVersions.length
+        + approvedNotDispatched.length
+        + stoppedWork.length,
+    };
+  }
+
   getDiscussion(discussionId) {
     const id = requiredId(discussionId, 'Discussion');
     const discussionRow = this.database.prepare(`

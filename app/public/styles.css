@@ -1955,3 +1955,111 @@ a.header-value {
   line-height: 1.5;
   white-space: pre;
 }
+
+/* Home: one cross-project view of what is waiting on the owner. */
+.home {
+  position: relative;
+  width: min(1080px, calc(100% - 48px));
+  min-height: calc(100vh - 108px);
+  margin: 24px auto;
+  padding: 48px clamp(28px, 5vw, 72px);
+  border: 1px solid var(--rule-strong);
+  background: var(--paper);
+  box-shadow: var(--shadow);
+  clip-path: polygon(0 0, calc(100% - 22px) 0, 100% 22px, 100% 100%, 0 100%);
+}
+
+.home-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 28px;
+}
+
+.home-section {
+  margin-top: 30px;
+  padding-top: 18px;
+  border-top: 1px solid var(--rule);
+}
+
+.home-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.home-section-head h2 {
+  margin: 0;
+}
+
+.home-count {
+  min-width: 26px;
+  padding: 1px 8px;
+  border: 1px solid var(--rule-strong);
+  color: var(--graphite-soft);
+  font-family: var(--font-data);
+  font-size: 0.74rem;
+  text-align: center;
+}
+
+.home-section-note {
+  margin: 4px 0 12px;
+  color: var(--graphite-soft);
+  font-size: 0.84rem;
+}
+
+.home-list,
+.home-projects {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.home-item {
+  padding: 10px 12px;
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--rule-strong);
+  background: var(--trace);
+}
+
+.home-item[data-tone="ready"] { border-left-color: var(--owner-deep); }
+.home-item[data-tone="attention"] { border-left-color: var(--brick); }
+
+.home-item-link {
+  color: inherit;
+  font-weight: 650;
+  text-decoration-color: var(--rule-strong);
+  text-underline-offset: 3px;
+}
+
+.home-item-detail {
+  margin: 4px 0 0;
+  font-size: 0.84rem;
+}
+
+.home-item-meta {
+  display: block;
+  margin-top: 6px;
+  color: var(--graphite-soft);
+  font-family: var(--font-data);
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.home-clear {
+  padding: 28px 0;
+}
+
+.home-projects {
+  grid-auto-flow: column;
+  justify-content: start;
+  gap: 14px;
+  margin-top: 32px;
+  padding-top: 16px;
+  border-top: 1px solid var(--rule);
+  font-size: 0.86rem;
+}

@@ -212,6 +212,10 @@ async function routeApi(service, request, response, url) {
     sendJson(response, 200, { run });
     return true;
   }
+  if (request.method === 'GET' && pathname === '/api/home') {
+    sendJson(response, 200, service.getHome());
+    return true;
+  }
   if (request.method === 'GET' && pathname === '/api/invariants') {
     sendJson(response, 200, service.verifyInvariants());
     return true;
