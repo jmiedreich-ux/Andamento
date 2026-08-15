@@ -52,9 +52,15 @@ export async function createApplication(options = {}) {
   const testMode = options.testMode ?? process.env.ANDAMENTO_TEST_MODE === '1';
   const enableDeterministic = options.enableDeterministic ?? (testMode || process.env.ANDAMENTO_ENABLE_TEST_ADAPTER === '1');
   const codexUrl = localProviderUrl(options.codexUrl || process.env.ANDAMENTO_CODEX_URL || 'ws://127.0.0.1:47823');
+  // The credential stays in memory on the service side only: it never reaches
+  // SQLite, a log line, an audit record, or the browser.
+  const anthropicApiKey = options.anthropicApiKey ?? process.env.ANTHROPIC_API_KEY ?? '';
+  const anthropicModel = options.anthropicModel ?? process.env.ANDAMENTO_ANTHROPIC_MODEL ?? '';
 
   const database = await openDatabase(databasePath, { busyTimeoutMs: options.databaseBusyTimeoutMs });
-  const agents = options.agents || createAgentRegistry({ codexUrl, enableDeterministic });
+  const agents = options.agents || createAgentRegistry({
+    codexUrl, enableDeterministic, anthropicApiKey, anthropicModel,
+  });
   const service = new PlanningService({ database, agents, testMode });
   const httpServer = createHttpServer({ service, host, port });
 

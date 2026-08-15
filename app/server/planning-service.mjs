@@ -44,6 +44,14 @@ const SAFE_AGENT_FAILURES = new Map([
   ['MALFORMED_CHANGE_SET', 'The participant answered without a change set. This usually means the package does not yet describe a concrete change to this repository. Sharpen the outcome and included scope, then dispatch again.'],
   ['CHANGE_SET_ESCAPES_REPOSITORY', 'The proposed change set refers to a path outside the project repository and was refused.'],
   ['CHANGE_SET_DID_NOT_APPLY', 'The proposed change set did not apply cleanly to the current files. Nothing was changed.'],
+  ['CLAUDE_NOT_CONFIGURED', 'No Anthropic credential is configured for Claude. Set ANTHROPIC_API_KEY and restart the local service.'],
+  ['CLAUDE_AUTH', 'The Anthropic credential was refused. Check ANTHROPIC_API_KEY and restart the local service.'],
+  ['CLAUDE_RATE_LIMITED', 'Claude is rate limited right now. Retry is available.'],
+  ['CLAUDE_REQUEST_TOO_LARGE', 'That request was too large for Claude. Shorten the prompt and retry.'],
+  ['CLAUDE_UNAVAILABLE', 'Claude could not be reached. Retry is available.'],
+  ['CLAUDE_REFUSED', 'Claude declined this request. Rephrase the prompt or use another participant.'],
+  ['CLAUDE_MALFORMED', 'Claude returned an unusable contribution.'],
+  ['CLAUDE_FAILURE', 'Claude could not complete this contribution. Retry is available.'],
 ]);
 const execFileAsync = promisify(execFile);
 
@@ -414,7 +422,7 @@ export class PlanningService {
     this.assertOwner(actorId);
     const normalizedDiscussionId = requiredId(discussionId, 'Discussion');
     const context = this.requireDiscussionContext(normalizedDiscussionId);
-    const adapterName = oneOf(input.adapter || 'codex', ['codex', 'deterministic'], 'Agent adapter');
+    const adapterName = oneOf(input.adapter || 'codex', ['codex', 'claude', 'deterministic'], 'Agent adapter');
     const adapter = this.agents.get(adapterName);
     const prompt = requiredText(input.prompt, 'Agent prompt', { max: 12000 });
     const idempotencyKey = requiredIdempotencyKey(input.idempotencyKey);

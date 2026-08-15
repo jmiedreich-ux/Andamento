@@ -1,5 +1,13 @@
 import { createApplication } from './application.mjs';
 
+// Load ANTHROPIC_API_KEY and other local settings from .env when present.
+// .env is gitignored; the file is optional and a missing one is not an error.
+try {
+  process.loadEnvFile();
+} catch {
+  // No .env file on this machine; environment variables still apply.
+}
+
 const application = await createApplication();
 const address = await application.start();
 console.log(`Andamento is ready at ${address.url}`);

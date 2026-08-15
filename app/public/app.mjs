@@ -502,6 +502,12 @@ function composerMarkup() {
   const modes = [
     { id: 'owner', label: 'Owner note', disabled: false },
     { id: 'codex', label: 'Ask Codex', disabled: codexDisabled, reason: codexDisabledReason },
+    {
+      id: 'claude',
+      label: 'Ask Claude',
+      disabled: !capabilities.claude?.available,
+      reason: capabilities.claude?.reason || 'Ask Claude',
+    },
     { id: 'imported', label: 'Import agent input', disabled: false },
     ...(capabilities.deterministic.available ? [{ id: 'deterministic', label: 'Test participant', disabled: false }] : []),
   ];
