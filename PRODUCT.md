@@ -8,7 +8,7 @@ web
 
 ## Stack
 
-Delegated by the owner for the Night 1 build: a dependency-light local web application using Node.js 24 ECMAScript modules, the Node HTTP surface, built-in `node:sqlite`, standards-based HTML/CSS/JavaScript, and Playwright for browser acceptance. The service and UI remain separated so a later client framework can be adopted without changing the domain or database contracts.
+Delegated by the owner for the Night 1 build: a dependency-light local web application using Node.js 24 ECMAScript modules, with `@anthropic-ai/sdk` adopted on 2026-08-15 as the one runtime dependency for provider access, the Node HTTP surface, built-in `node:sqlite`, standards-based HTML/CSS/JavaScript, and Playwright for browser acceptance. The service and UI remain separated so a later client framework can be adopted without changing the domain or database contracts.
 
 ## Users
 

@@ -1,11 +1,12 @@
-// Anthropic Messages API adapter.
-//
-// This uses the built-in fetch rather than @anthropic-ai/sdk because PRODUCT.md
-// records a dependency-light architecture on the Node HTTP surface; adding a
-// runtime dependency is an owner decision, not an implementation detail.
+import Anthropic, {
+  APIConnectionError,
+  APIError,
+  APIUserAbortError,
+  AuthenticationError,
+  PermissionDeniedError,
+  RateLimitError,
+} from '@anthropic-ai/sdk';
 
-const API_URL = 'https://api.anthropic.com/v1/messages';
-const API_VERSION = '2023-06-01';
 const DEFAULT_MODEL = 'claude-opus-5';
 const REQUEST_TIMEOUT_MS = 180_000;
 
@@ -25,26 +26,44 @@ function failure(message, code) {
 
 // Provider errors are mapped to a fixed set of codes so no provider text or
 // credential material can reach a durable record, a log, or the browser.
-function mapStatus(status) {
-  if (status === 401 || status === 403) return 'CLAUDE_AUTH';
-  if (status === 429) return 'CLAUDE_RATE_LIMITED';
-  if (status === 413) return 'CLAUDE_REQUEST_TOO_LARGE';
-  if (status === 529 || status >= 500) return 'CLAUDE_UNAVAILABLE';
-  return 'CLAUDE_FAILURE';
+function mapError(error) {
+  if (error instanceof APIUserAbortError) {
+    return failure('The Claude contribution was cancelled.', 'CANCELLED');
+  }
+  if (error instanceof AuthenticationError || error instanceof PermissionDeniedError) {
+    return failure('The Anthropic credential was refused.', 'CLAUDE_AUTH');
+  }
+  if (error instanceof RateLimitError) {
+    return failure('Claude is rate limited.', 'CLAUDE_RATE_LIMITED');
+  }
+  if (error instanceof APIConnectionError) {
+    return failure('Claude could not be reached.', 'CLAUDE_UNAVAILABLE');
+  }
+  if (error instanceof APIError) {
+    const status = Number(error.status) || 0;
+    if (status === 413) return failure('That request was too large for Claude.', 'CLAUDE_REQUEST_TOO_LARGE');
+    if (status >= 500) return failure('Claude is unavailable.', 'CLAUDE_UNAVAILABLE');
+    return failure(`Claude refused the request with status ${status}.`, 'CLAUDE_FAILURE');
+  }
+  return failure('Claude could not complete this contribution.', 'CLAUDE_FAILURE');
 }
 
 export class AnthropicPlanningAgent {
-  constructor({ apiKey = '', model = DEFAULT_MODEL, maxTokens = 16_000 } = {}) {
+  constructor({ apiKey = '', model = DEFAULT_MODEL, maxTokens = 16_000, client = null } = {}) {
     this.id = 'claude';
     this.provider = 'anthropic';
     this.model = model || DEFAULT_MODEL;
     this.displayName = 'Claude';
     this.maxTokens = maxTokens;
     this.apiKey = apiKey;
+    // Injectable so tests exercise this adapter without a network call.
+    this.client = client || (apiKey
+      ? new Anthropic({ apiKey, timeout: REQUEST_TIMEOUT_MS, maxRetries: 2 })
+      : null);
   }
 
   configured() {
-    return Boolean(this.apiKey);
+    return Boolean(this.client);
   }
 
   async available() {
@@ -57,54 +76,25 @@ export class AnthropicPlanningAgent {
     if (!this.configured()) {
       throw failure('No Anthropic credential is configured.', 'CLAUDE_NOT_CONFIGURED');
     }
-    const controller = new AbortController();
-    const relayAbort = () => controller.abort();
-    if (signal?.aborted) relayAbort();
-    else signal?.addEventListener('abort', relayAbort, { once: true });
-    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-
-    let response;
+    let message;
     try {
-      response = await fetch(API_URL, {
-        method: 'POST',
-        headers: {
-          'x-api-key': this.apiKey,
-          'anthropic-version': API_VERSION,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: this.model,
-          max_tokens: this.maxTokens,
-          system: PLANNING_INSTRUCTIONS,
-          messages: [{ role: 'user', content: prompt }],
-        }),
-        signal: controller.signal,
-      });
+      message = await this.client.messages.create({
+        model: this.model,
+        max_tokens: this.maxTokens,
+        system: PLANNING_INSTRUCTIONS,
+        messages: [{ role: 'user', content: prompt }],
+      }, { signal });
     } catch (error) {
       if (signal?.aborted) throw failure('The Claude contribution was cancelled.', 'CANCELLED');
-      throw failure('Claude could not be reached.', 'CLAUDE_UNAVAILABLE');
-    } finally {
-      clearTimeout(timeout);
-      signal?.removeEventListener('abort', relayAbort);
+      throw mapError(error);
     }
 
-    if (!response.ok) {
-      throw failure(`Claude refused the request with status ${response.status}.`, mapStatus(response.status));
-    }
-
-    let payload;
-    try {
-      payload = await response.json();
-    } catch {
-      throw failure('Claude returned an unreadable response.', 'CLAUDE_MALFORMED');
-    }
-
-    // Check stop_reason before reading content: a refusal can return HTTP 200
-    // with an empty content array.
-    if (payload.stop_reason === 'refusal') {
+    // Check stop_reason before reading content: a refusal returns a successful
+    // response whose content array is empty.
+    if (message.stop_reason === 'refusal') {
       throw failure('Claude declined this request.', 'CLAUDE_REFUSED');
     }
-    const content = (payload.content || [])
+    const content = (message.content || [])
       .filter(block => block?.type === 'text')
       .map(block => block.text)
       .join('\n')
@@ -112,13 +102,13 @@ export class AnthropicPlanningAgent {
     if (!content) {
       throw failure('Claude returned an empty contribution.', 'CLAUDE_MALFORMED');
     }
-    if (payload.stop_reason === 'max_tokens') {
+    if (message.stop_reason === 'max_tokens') {
       return {
         provider: this.provider,
-        model: payload.model || this.model,
+        model: message.model || this.model,
         content: `${content}\n\n[This contribution reached the response limit and may be incomplete.]`,
       };
     }
-    return { provider: this.provider, model: payload.model || this.model, content };
+    return { provider: this.provider, model: message.model || this.model, content };
   }
 }

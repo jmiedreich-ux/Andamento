@@ -10,7 +10,7 @@
 - **Existing prototype:** Google Sheets, Apps Script, and the Codex relay remain behavioral and integration evidence only. They are neither the intended authoritative backend nor visual design inputs for the new product.
 - **Repository state:** Private GitHub repository `https://github.com/jmiedreich-ux/Andamento`. `main` is the only branch; `feature/planning-loop-m1` was fast-forwarded onto it with history intact and deleted, and draft PR [#1](https://github.com/jmiedreich-ux/Andamento/pull/1) closed as merged.
 - **Implementation state:** The planning loop runs end to end on `main`: project registration, planning rooms, owner/Claude/Codex/imported contributions, source-linked points, owner disposition, versioned packages, explicit approval, dispatch to a proposed change set, apply with revert, and a cross-project home view of outstanding work.
-- **Verification state:** `npm test` 77/77, `npm run test:e2e` 10/10, `npm audit --audit-level=high` 0 vulnerabilities, 23 runtime invariants passing, six ordered migrations. Execution and live Claude were both exercised against real providers, not only fixtures.
+- **Verification state:** `npm test` 78/78, `npm run test:e2e` 10/10, `npm audit --audit-level=high` 0 vulnerabilities, 23 runtime invariants passing, seven ordered migrations. Execution and live Claude were both exercised against real providers, not only fixtures.
 - **Review state:** No independent review covers the execution, apply/revert, Claude, or home-view work. The earlier review round covered a superseded commit.
 - **CI state:** Not configured. Local validation is the gate.
 

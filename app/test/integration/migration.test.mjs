@@ -120,7 +120,7 @@ test('migrations 003 through 005 upgrade existing authority records without losi
 
   const upgraded = await openDatabase(databasePath);
   try {
-    assert.equal(Number(upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version), 6);
+    assert.equal(Number(upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version), 7);
     assert.deepEqual({ ...upgraded.prepare(`
       SELECT work_package_version_id AS versionId, planning_point_id AS pointId
       FROM approved_package_point_snapshots

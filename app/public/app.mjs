@@ -101,15 +101,61 @@ function operationKey(slot, prefix, { method = 'POST', target, payload = {} }) {
 
 function holdDraftRecovery(slot, recovery) {
   if (!slot || !recovery) return;
-  state.pendingDraftRecoveries.set(slot, {
+  const held = {
     ...structuredClone(recovery),
     discussionId: recovery.discussionId || '',
     sequence: ++state.recoverySequence,
-  });
+  };
+  state.pendingDraftRecoveries.set(slot, held);
+  persistDraftRecovery(slot, held);
+}
+
+// Held input is written through to the local service so a full reload or a
+// service restart cannot discard it. A failed write is not surfaced: the
+// in-memory record still covers leave and return within this session.
+function persistDraftRecovery(slot, recovery) {
+  if (!recovery.projectId) return;
+  void api(`/api/drafts/${encodeURIComponent(slot)}`, {
+    method: 'PUT',
+    body: {
+      projectId: recovery.projectId,
+      discussionId: recovery.discussionId || '',
+      payload: recovery,
+    },
+  }).catch(() => {});
+}
+
+function forgetPersistedDraft(slot) {
+  // The body is required: the local request boundary refuses a mutation
+  // without an application/json content type, which a bare DELETE lacks.
+  void api(`/api/drafts/${encodeURIComponent(slot)}`, {
+    method: 'DELETE',
+    body: {},
+  }).catch(() => {});
+}
+
+// Merge durable drafts into the in-memory map before a route restores input,
+// so a reloaded page recovers exactly what an unreloaded one would.
+async function loadPersistedDrafts(projectId, discussionId = '') {
+  if (!projectId) return;
+  try {
+    const query = `projectId=${encodeURIComponent(projectId)}&discussionId=${encodeURIComponent(discussionId)}`;
+    const { drafts } = await api(`/api/drafts?${query}`);
+    for (const draft of drafts || []) {
+      if (state.pendingDraftRecoveries.has(draft.slot)) continue;
+      state.pendingDraftRecoveries.set(draft.slot, {
+        ...draft.payload,
+        discussionId: draft.payload.discussionId || '',
+        sequence: ++state.recoverySequence,
+      });
+    }
+  } catch {
+    // A durable read failure leaves this session's in-memory recovery intact.
+  }
 }
 
 function refreshHeldDraftRecoveries() {
-  for (const recovery of state.pendingDraftRecoveries.values()) {
+  for (const [slot, recovery] of state.pendingDraftRecoveries) {
     if (recovery.projectId !== state.projectId) continue;
     if (recovery.type === 'discussion') {
       if (state.phase === 'project') recovery.title = state.discussionDraft.title;
@@ -132,6 +178,7 @@ function refreshHeldDraftRecoveries() {
       recovery.base = { ...(state.packageBase || blankPackageDraft()) };
       recovery.baseRowVersion = state.packageBaseRowVersion;
     }
+    persistDraftRecovery(slot, recovery);
   }
 }
 
@@ -139,7 +186,7 @@ function clearOperation(slot) {
   if (!slot) return;
   state.mutationKeys.delete(slot);
   state.pendingRefreshOperations.delete(slot);
-  state.pendingDraftRecoveries.delete(slot);
+  if (state.pendingDraftRecoveries.delete(slot)) forgetPersistedDraft(slot);
 }
 
 function clearOperationsForPrefix(prefix) {
@@ -1607,6 +1654,8 @@ async function syncRoute() {
       state.discussions = result.discussions;
       state.discussionListUnavailable = false;
       state.phase = 'project';
+      await loadPersistedDrafts(project.id);
+      if (generation !== state.routeGeneration) return;
       consumePendingDraftRecoveries(project.id);
       render();
     } catch (error) {
@@ -1634,6 +1683,8 @@ async function syncRoute() {
     state.editPointId = '';
     state.viewedVersionId = state.detail.workPackage?.currentVersion?.id || '';
     syncPackageDraft();
+    await loadPersistedDrafts(project.id, route.discussionId);
+    if (generation !== state.routeGeneration) return;
     consumePendingDraftRecoveries(project.id, route.discussionId);
     render();
   } catch (error) {
@@ -1926,7 +1977,7 @@ async function submitDiscussion(form) {
   const target = `/api/projects/${encodeURIComponent(projectId)}/discussions`;
   const payload = { title };
   const result = await withMutation('discussion', () => api(target, {
-    method: 'POST', body: { ...payload, idempotencyKey: operationKey(operationSlot, 'discussion', { target, payload }) },
+    method: 'POST', body: { ...payload, draftSlot: operationSlot, idempotencyKey: operationKey(operationSlot, 'discussion', { target, payload }) },
   }), {
     refresh: false,
     successMessage: 'Planning room opened.',
@@ -1971,14 +2022,14 @@ async function submitMessage(form) {
     };
     request = () => api(target, {
       method: 'POST',
-      body: { ...payload, idempotencyKey: operationKey(operationSlot, 'message', { target, payload }) },
+      body: { ...payload, draftSlot: operationSlot, idempotencyKey: operationKey(operationSlot, 'message', { target, payload }) },
     });
   } else {
     const target = `/api/discussions/${encodeURIComponent(discussionId)}/agent-runs`;
     const payload = { adapter: mode, prompt: content };
     request = () => api(target, {
       method: 'POST',
-      body: { ...payload, idempotencyKey: operationKey(operationSlot, 'agent-run', { target, payload }) },
+      body: { ...payload, draftSlot: operationSlot, idempotencyKey: operationKey(operationSlot, 'agent-run', { target, payload }) },
     });
   }
   const result = await withMutation(key, request, {
@@ -2018,7 +2069,7 @@ async function submitCapture(form) {
   const payload = { pointType: data.get('pointType'), text: data.get('text') };
   const result = await withMutation(key, () => api(target, {
     method: 'POST',
-    body: { ...payload, idempotencyKey: operationKey(operationSlot, 'point', { target, payload }) },
+    body: { ...payload, draftSlot: operationSlot, idempotencyKey: operationKey(operationSlot, 'point', { target, payload }) },
   }), {
     refresh: false,
     successMessage: 'Planning point proposed for owner decision.',
@@ -2053,7 +2104,7 @@ async function submitReplacement(form) {
   };
   const result = await withMutation(`replace:${pointId}`, () => api(target, {
     method: 'POST',
-    body: { ...payload, idempotencyKey: operationKey(operationSlot, 'point-replacement', { target, payload }) },
+    body: { ...payload, draftSlot: operationSlot, idempotencyKey: operationKey(operationSlot, 'point-replacement', { target, payload }) },
   }), {
     refresh: false,
     successMessage: 'Replacement proposal created; the earlier proposal remains in history.',
@@ -2104,7 +2155,7 @@ async function savePackage({ refresh = true } = {}) {
   const payload = { content: contentFromPackageDraft(draftSnapshot), expectedVersion: expected };
   const result = await withMutation('package-save', () => api(target, {
     method: 'PUT',
-    body: { ...payload, idempotencyKey: operationKey(operationSlot, 'package-save', { method: 'PUT', target, payload }) },
+    body: { ...payload, draftSlot: operationSlot, idempotencyKey: operationKey(operationSlot, 'package-save', { method: 'PUT', target, payload }) },
   }), {
     refresh: false,
     operationSlot,

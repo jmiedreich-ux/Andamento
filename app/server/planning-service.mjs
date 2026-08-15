@@ -346,6 +346,7 @@ export class PlanningService {
         INSERT INTO discussions(id, project_id, title, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?)
       `).run(id, normalizedProjectId, title, createdAt, createdAt);
+      this.retireDraftSlot(input.draftSlot);
       appendAudit(this.database, {
         eventType: 'DISCUSSION_CREATED', resourceType: 'DISCUSSION', resourceId: id, actorId: OWNER_ID,
         details: { projectId: normalizedProjectId, title },
@@ -393,6 +394,7 @@ export class PlanningService {
         VALUES (?, ?, ?, ?, ?, ?)
       `).run(id, normalizedDiscussionId, storedParticipant.id, content, contributionType, createdAt);
       this.touchDiscussion(normalizedDiscussionId, createdAt);
+      this.retireDraftSlot(input.draftSlot);
       appendAudit(this.database, {
         eventType: contributionType === 'OWNER' ? 'OWNER_MESSAGE_ADDED' : 'IMPORTED_CONTRIBUTION_ADDED',
         resourceType: 'MESSAGE', resourceId: id, actorId,
@@ -496,6 +498,7 @@ export class PlanningService {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, 'RUNNING', ?, ?)
       `).run(run.id, run.discussionId, run.participantId, run.adapter, run.provider, run.model, run.prompt, normalizedRetryId, run.startedAt);
       this.touchDiscussion(normalizedDiscussionId, run.startedAt);
+      this.retireDraftSlot(input.draftSlot);
       appendAudit(this.database, {
         eventType: 'AGENT_RUN_STARTED', resourceType: 'AGENT_RUN', resourceId: run.id, actorId,
         details: { discussionId: normalizedDiscussionId, adapter: adapterName, retryOfRunId: normalizedRetryId },
@@ -711,6 +714,7 @@ export class PlanningService {
         ) VALUES (?, ?, ?, ?, ?, ?, ?)
       `).run(point.id, point.discussionId, point.sourceMessageId, point.createdByParticipantId, point.pointType, point.text, point.createdAt);
       this.touchDiscussion(point.discussionId, point.createdAt);
+      this.retireDraftSlot(input.draftSlot);
       appendAudit(this.database, {
         eventType: 'PLANNING_POINT_PROPOSED', resourceType: 'PLANNING_POINT', resourceId: point.id, actorId,
         details: { sourceMessageId: source.id, pointType },
@@ -765,6 +769,7 @@ export class PlanningService {
           supersedes_point_id, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `).run(replacement.id, replacement.discussionId, replacement.sourceMessageId, actorId, pointType, text, current.id, createdAt);
+      this.retireDraftSlot(input.draftSlot);
       appendAudit(this.database, {
         eventType: 'PLANNING_POINT_REPLACED', resourceType: 'PLANNING_POINT', resourceId: replacement.id, actorId,
         details: { supersedesPointId: current.id },
@@ -897,6 +902,7 @@ export class PlanningService {
         WHERE id = ? AND status = 'DRAFT' AND row_version = ?
       `).run(JSON.stringify(content), updatedAt, normalizedVersionId, version);
       if (Number(result.changes) !== 1) throw conflict('This package changed before the draft was saved.');
+      this.retireDraftSlot(input.draftSlot);
       appendAudit(this.database, {
         eventType: 'WORK_PACKAGE_DRAFT_UPDATED', resourceType: 'WORK_PACKAGE_VERSION', resourceId: normalizedVersionId, actorId,
         details: { rowVersion: version + 1 },
@@ -1026,6 +1032,59 @@ export class PlanningService {
       return next;
     });
     return { version: value, replayed };
+  }
+
+  // Working input the owner has not confirmed yet. Held durably so a reload or
+  // a restart cannot discard it, and deleted the moment its mutation confirms.
+  // Retiring the draft inside the mutation that made the input durable removes
+  // any window where a reload could offer back work that already committed.
+  retireDraftSlot(slot) {
+    if (!slot || typeof slot !== 'string') return;
+    this.database.prepare('DELETE FROM input_drafts WHERE slot = ?').run(slot);
+  }
+
+  saveInputDraft(slot, input = {}, actorId) {
+    this.assertOwner(actorId);
+    const normalizedSlot = requiredText(slot, 'Draft slot', { max: 400 });
+    const projectId = requiredId(input.projectId, 'Project');
+    const discussionId = input.discussionId ? requiredId(input.discussionId, 'Discussion') : '';
+    if (!input.payload || typeof input.payload !== 'object') {
+      throw validationError('A draft payload is required.');
+    }
+    const payloadJson = JSON.stringify(input.payload);
+    if (payloadJson.length > 400_000) throw validationError('That draft is too large to hold.');
+    this.database.prepare(`
+      INSERT INTO input_drafts(slot, project_id, discussion_id, owner_participant_id, payload_json, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(slot) DO UPDATE SET payload_json = excluded.payload_json, updated_at = excluded.updated_at
+    `).run(normalizedSlot, projectId, discussionId, actorId, payloadJson, now());
+    return { slot: normalizedSlot };
+  }
+
+  listInputDrafts(projectId, discussionId = '', actorId) {
+    this.assertOwner(actorId);
+    const normalizedProjectId = requiredId(projectId, 'Project');
+    const normalizedDiscussionId = discussionId ? requiredId(discussionId, 'Discussion') : '';
+    return this.database.prepare(`
+      SELECT slot, project_id AS projectId, discussion_id AS discussionId,
+             payload_json AS payloadJson, updated_at AS updatedAt
+      FROM input_drafts
+      WHERE project_id = ? AND discussion_id = ?
+      ORDER BY updated_at
+    `).all(normalizedProjectId, normalizedDiscussionId).map(row => ({
+      slot: row.slot,
+      projectId: row.projectId,
+      discussionId: row.discussionId,
+      updatedAt: row.updatedAt,
+      payload: JSON.parse(row.payloadJson),
+    }));
+  }
+
+  deleteInputDraft(slot, actorId) {
+    this.assertOwner(actorId);
+    const normalizedSlot = requiredText(slot, 'Draft slot', { max: 400 });
+    this.database.prepare('DELETE FROM input_drafts WHERE slot = ?').run(normalizedSlot);
+    return { slot: normalizedSlot };
   }
 
   // One cross-project answer to "what is waiting on the owner?". Every item is

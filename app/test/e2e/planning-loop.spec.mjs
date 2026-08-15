@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdir } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import assert from 'node:assert/strict';
 import { test, expect } from '@playwright/test';
 
 const repositoryRoot = process.env.ANDAMENTO_E2E_REPOSITORY_ROOT || process.cwd();
@@ -1801,8 +1802,8 @@ test.describe.serial('Night 1 planning loop', () => {
       await page.unroute(`**${decidedReplacementEndpoint}`, refuseDecidedReplacement);
     }
 
-    // The reload boundary: a HELD recovery record does not survive a full page reload.
-    const discardedByReload = 'This held recovery record is discarded by a full page reload.';
+    // The owner decided on 2026-08-15 that unsent input survives a full reload.
+    const survivesReload = 'This held recovery record survives a full page reload.';
     const refuseReloadMessage = async route => {
       if (route.request().method() !== 'POST') {
         await route.continue();
@@ -1812,23 +1813,41 @@ test.describe.serial('Night 1 planning loop', () => {
     };
     await page.route(`**${messageEndpoint}`, refuseReloadMessage);
     try {
-      await page.getByLabel('Add owner context').fill(discardedByReload);
+      await page.getByLabel('Add owner context').fill(survivesReload);
       await page.getByRole('button', { name: 'Add to discussion', exact: true }).click();
       await expect(page.getByRole('button', { name: 'Add to discussion', exact: true })).toBeEnabled();
       await goToHash(siblingHash);
       await expect(page.getByRole('heading', { name: siblingRoom.title, exact: true })).toBeVisible();
       await goToHash(roomHash);
-      await expect(page.getByLabel('Add owner context')).toHaveValue(discardedByReload);
+      await expect(page.getByLabel('Add owner context')).toHaveValue(survivesReload);
+
+      // A full reload drops every in-memory record, so anything that returns
+      // here came from the durable service-side draft.
+      await page.reload();
+      await expect(page.getByRole('heading', { name: workspace.discussion.title, exact: true })).toBeVisible();
+      await expect(page.getByLabel('Add owner context')).toHaveValue(survivesReload);
+      await expect(page.locator('.feedback[data-tone]')).toContainText('Nothing was submitted');
+      const heldAfterReload = await json(await request.get(`/api/discussions/${workspace.discussion.id}`));
+      expect(heldAfterReload.messages.filter(message => message.content === survivesReload)).toHaveLength(0);
     } finally {
       await page.unroute(`**${messageEndpoint}`, refuseReloadMessage);
     }
+
+    // The draft is retired by the same transaction that made the input durable,
+    // so a reload right after submitting is clean rather than offering the
+    // entry back or reporting a stale reconciliation.
+    await page.getByRole('button', { name: 'Add to discussion', exact: true }).click();
+    await expect(page.getByText(survivesReload, { exact: true })).toBeVisible();
     await page.reload();
     await expect(page.getByRole('heading', { name: workspace.discussion.title, exact: true })).toBeVisible();
-    await expect(page.getByText(appendedMessage, { exact: true })).toBeVisible();
     await expect(page.getByLabel('Add owner context')).toHaveValue('');
     await expect(page.locator('.feedback[data-tone]')).toHaveCount(0);
-    const afterReload = await json(await request.get(`/api/discussions/${workspace.discussion.id}`));
-    expect(afterReload.messages.filter(message => message.content === discardedByReload)).toHaveLength(0);
+    const settled = await json(await request.get(`/api/discussions/${workspace.discussion.id}`));
+    expect(settled.messages.filter(message => message.content === survivesReload)).toHaveLength(1);
+    const remainingDrafts = await json(await request.get(
+      `/api/drafts?projectId=${workspace.project.id}&discussionId=${workspace.discussion.id}`,
+    ));
+    assert.equal(remainingDrafts.drafts.length, 0);
   });
 
   test('authority-immutability-idempotency', async ({ page, request }) => {

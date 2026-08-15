@@ -212,6 +212,28 @@ async function routeApi(service, request, response, url) {
     sendJson(response, 200, { run });
     return true;
   }
+  if (request.method === 'GET' && pathname === '/api/drafts') {
+    sendJson(response, 200, {
+      drafts: service.listInputDrafts(
+        url.searchParams.get('projectId'),
+        url.searchParams.get('discussionId') || '',
+        actorFor(service, request),
+      ),
+    });
+    return true;
+  }
+  params = routeMatch(pathname, /^\/api\/drafts\/(?<slot>[^/]+)$/);
+  if (params && request.method === 'PUT') {
+    const input = await readJsonBody(request);
+    const slot = decodeURIComponent(params.slot);
+    sendJson(response, 200, service.saveInputDraft(slot, input, actorFor(service, request)));
+    return true;
+  }
+  if (params && request.method === 'DELETE') {
+    const slot = decodeURIComponent(params.slot);
+    sendJson(response, 200, service.deleteInputDraft(slot, actorFor(service, request)));
+    return true;
+  }
   if (request.method === 'GET' && pathname === '/api/home') {
     sendJson(response, 200, service.getHome());
     return true;

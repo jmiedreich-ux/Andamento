@@ -85,7 +85,7 @@ test('persists the planning loop on disk across a real application restart in WA
   assert.equal(fixture.database.prepare('PRAGMA journal_mode').get().journal_mode.toLowerCase(), 'wal');
   assert.equal(fixture.database.prepare('PRAGMA locking_mode').get().locking_mode.toLowerCase(), 'exclusive');
   assert.equal(Number(fixture.database.prepare('PRAGMA foreign_keys').get().foreign_keys), 1);
-  assert.equal(Number(fixture.database.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get().count), 6);
+  assert.equal(Number(fixture.database.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get().count), 7);
   await fixture.close();
   await fixture.open();
 
