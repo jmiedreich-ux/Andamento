@@ -196,6 +196,20 @@ async function routeApi(service, request, response, url) {
     sendJson(response, params.action === 'next-version' ? 201 : 200, result);
     return true;
   }
+  params = routeMatch(pathname, /^\/api\/work-package-versions\/(?<versionId>[^/]+)\/execution-runs$/);
+  if (params && request.method === 'POST') {
+    const input = await readJsonBody(request);
+    const run = await service.dispatchExecution(params.versionId, input, actorFor(service, request));
+    sendJson(response, 201, { run });
+    return true;
+  }
+  params = routeMatch(pathname, /^\/api\/execution-runs\/(?<runId>[^/]+)\/cancel$/);
+  if (params && request.method === 'POST') {
+    const input = await readJsonBody(request);
+    const run = service.cancelExecution(params.runId, input, actorFor(service, request));
+    sendJson(response, 200, { run });
+    return true;
+  }
   if (request.method === 'GET' && pathname === '/api/invariants') {
     sendJson(response, 200, service.verifyInvariants());
     return true;

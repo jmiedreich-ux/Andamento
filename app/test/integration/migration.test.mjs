@@ -113,14 +113,14 @@ async function createLegacyV2Database(databasePath, {
   }
 }
 
-test('migrations 003 and 004 upgrade existing authority records without losing lineage', async t => {
+test('migrations 003 through 005 upgrade existing authority records without losing lineage', async t => {
   const fixture = await createFixture(t);
   const databasePath = path.join(fixture.root, 'legacy', 'andamento-v2.db');
   await createLegacyV2Database(databasePath);
 
   const upgraded = await openDatabase(databasePath);
   try {
-    assert.equal(Number(upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version), 4);
+    assert.equal(Number(upgraded.prepare('SELECT MAX(version) AS version FROM schema_migrations').get().version), 5);
     assert.deepEqual({ ...upgraded.prepare(`
       SELECT work_package_version_id AS versionId, planning_point_id AS pointId
       FROM approved_package_point_snapshots

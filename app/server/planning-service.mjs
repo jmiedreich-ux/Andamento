@@ -22,6 +22,7 @@ import {
   optionalText,
 } from './domain/validation.mjs';
 import { appendAudit, mutation, now, transaction } from './storage/database.mjs';
+import { buildChangeSet } from './execution/change-set.mjs';
 
 const OWNER_ID = 'owner-local';
 const CODEX_CLEANUP_PENDING = 'CODEX_CLEANUP_PENDING';
@@ -38,6 +39,8 @@ const SAFE_AGENT_FAILURES = new Map([
   ['DETERMINISTIC_FAILURE', 'The planning participant could not complete this attempt. Retry is available.'],
   ['MALFORMED_CONTRIBUTION', 'The participant returned an unusable contribution.'],
   ['REPOSITORY_UNAVAILABLE', 'The registered Git repository is no longer available. Restore it before retrying.'],
+  ['MALFORMED_CHANGE_SET', 'The participant answered without a change set. This usually means the package does not yet describe a concrete change to this repository. Sharpen the outcome and included scope, then dispatch again.'],
+  ['CHANGE_SET_ESCAPES_REPOSITORY', 'The proposed change set refers to a path outside the project repository and was refused.'],
 ]);
 const execFileAsync = promisify(execFile);
 
@@ -132,6 +135,30 @@ function mapMessage(row) {
   };
 }
 
+function mapExecutionRun(row) {
+  return {
+    id: row.id,
+    workPackageVersionId: row.workPackageVersionId,
+    adapter: row.adapter,
+    provider: row.provider,
+    model: row.model,
+    displayName: row.displayName,
+    status: row.status,
+    errorCode: row.errorCode || '',
+    errorMessage: row.errorMessage || '',
+    startedAt: row.startedAt,
+    completedAt: row.completedAt || '',
+    rowVersion: row.rowVersion,
+    changeSet: row.changeSetId ? {
+      id: row.changeSetId,
+      diff: row.diff,
+      diffSha256: row.diffSha256,
+      fileCount: row.fileCount,
+      createdAt: row.changeSetCreatedAt,
+    } : null,
+  };
+}
+
 function mapRun(row) {
   return {
     id: row.id,
@@ -223,6 +250,8 @@ export class PlanningService {
     this.agents = agents;
     this.testMode = testMode;
     this.activeRuns = new Map();
+    this.activeExecutions = new Map();
+    this.trackedExecutions = new Set();
     this.shuttingDown = false;
     this.shutdownFinalized = false;
     this.shutdownPromise = null;
@@ -1060,7 +1089,22 @@ export class PlanningService {
         JOIN work_package_versions wpv ON wpv.id = ae.work_package_version_id
         WHERE wpv.work_package_id = ? ORDER BY ae.occurred_at, ae.id
       `).all(packageRow.id);
-      workPackage = { ...packageRow, versions, currentVersion: versions[0] || null, approvals };
+      const executions = this.database.prepare(`
+        SELECT er.id, er.work_package_version_id AS workPackageVersionId, er.adapter, er.provider,
+               er.model, er.status, er.error_code AS errorCode, er.error_message AS errorMessage,
+               er.started_at AS startedAt, er.completed_at AS completedAt,
+               er.row_version AS rowVersion, p.display_name AS displayName,
+               ecs.id AS changeSetId, ecs.diff, ecs.diff_sha256 AS diffSha256,
+               ecs.file_count AS fileCount, ecs.created_at AS changeSetCreatedAt
+        FROM execution_runs er
+        JOIN participants p ON p.id = er.participant_id
+        LEFT JOIN execution_change_sets ecs ON ecs.execution_run_id = er.id
+        JOIN work_package_versions wpv ON wpv.id = er.work_package_version_id
+        WHERE wpv.work_package_id = ? ORDER BY er.started_at DESC, er.id
+      `).all(packageRow.id).map(mapExecutionRun);
+      workPackage = {
+        ...packageRow, versions, currentVersion: versions[0] || null, approvals, executions,
+      };
     }
     const codexQuarantine = this.findCodexCleanupQuarantine({
       discussionId: id,
@@ -1212,6 +1256,36 @@ export class PlanningService {
                 )`,
       },
       {
+        name: 'executions dispatch only approved versions',
+        sql: `SELECT er.id FROM execution_runs er
+              JOIN work_package_versions wpv ON wpv.id = er.work_package_version_id
+              WHERE wpv.status <> 'READY_FOR_EXECUTION'`,
+      },
+      {
+        name: 'executions are dispatched by an owner',
+        sql: `SELECT er.id FROM execution_runs er
+              LEFT JOIN participants p ON p.id = er.dispatched_by_participant_id
+              WHERE p.id IS NULL OR p.kind <> 'OWNER'`,
+      },
+      {
+        name: 'change sets belong to their dispatched version',
+        sql: `SELECT ecs.id FROM execution_change_sets ecs
+              JOIN execution_runs er ON er.id = ecs.execution_run_id
+              WHERE ecs.work_package_version_id <> er.work_package_version_id`,
+      },
+      {
+        name: 'only a succeeded execution carries a change set',
+        sql: `SELECT er.id FROM execution_runs er
+              JOIN execution_change_sets ecs ON ecs.execution_run_id = er.id
+              WHERE er.status <> 'SUCCEEDED'`,
+      },
+      {
+        name: 'a succeeded execution has exactly one change set',
+        sql: `SELECT er.id FROM execution_runs er
+              LEFT JOIN execution_change_sets ecs ON ecs.execution_run_id = er.id
+              WHERE er.status = 'SUCCEEDED' AND ecs.id IS NULL`,
+      },
+      {
         name: 'retry sources have at most one child run',
         sql: `SELECT retry_of_run_id FROM agent_runs WHERE retry_of_run_id IS NOT NULL
               GROUP BY retry_of_run_id HAVING COUNT(*) > 1`,
@@ -1294,6 +1368,177 @@ export class PlanningService {
     `).get(id);
     if (!row) throw notFound('Planning point not found.');
     return mapPoint(row);
+  }
+
+  requireExecutionRun(id) {
+    const row = this.database.prepare(`
+      SELECT er.id, er.work_package_version_id AS workPackageVersionId, er.adapter, er.provider,
+             er.model, er.status, er.error_code AS errorCode, er.error_message AS errorMessage,
+             er.started_at AS startedAt, er.completed_at AS completedAt,
+             er.row_version AS rowVersion, p.display_name AS displayName,
+             ecs.id AS changeSetId, ecs.diff, ecs.diff_sha256 AS diffSha256,
+             ecs.file_count AS fileCount, ecs.created_at AS changeSetCreatedAt
+      FROM execution_runs er
+      JOIN participants p ON p.id = er.participant_id
+      LEFT JOIN execution_change_sets ecs ON ecs.execution_run_id = er.id
+      WHERE er.id = ?
+    `).get(id);
+    if (!row) throw notFound('Execution run not found.');
+    return mapExecutionRun(row);
+  }
+
+  async dispatchExecution(versionId, input = {}, actorId) {
+    this.assertOwner(actorId);
+    const normalizedVersionId = requiredId(versionId, 'Work-package version');
+    const adapterName = oneOf(input.adapter || 'codex', ['codex', 'deterministic'], 'Execution adapter');
+    const adapter = this.agents.get(adapterName);
+    if (typeof adapter.execute !== 'function') {
+      throw capabilityUnavailable(`The ${adapterName} participant cannot execute a package.`, { adapter: adapterName });
+    }
+    const idempotencyKey = requiredIdempotencyKey(input.idempotencyKey);
+    const version = this.requirePackageVersion(normalizedVersionId);
+    if (version.status !== 'READY_FOR_EXECUTION') {
+      throw conflict('Only an approved work-package version can be dispatched for execution.');
+    }
+    const discussionRow = this.database.prepare(`
+      SELECT d.id FROM discussions d
+      JOIN work_packages wp ON wp.discussion_id = d.id
+      WHERE wp.id = ?
+    `).get(version.workPackageId);
+    if (!discussionRow) throw notFound('Planning room not found.');
+    const context = this.requireDiscussionContext(discussionRow.id);
+    // Re-validate the allowlisted root at dispatch: an approval can outlive a moved repository.
+    const repositoryRoot = await validateRepositoryRoot(context.repositoryRoot);
+    const participantIdentity = {
+      participantKey: `agent:${adapter.provider}:${adapter.model}:${adapter.id}`,
+      kind: 'AGENT',
+      displayName: adapter.displayName,
+      provider: adapter.provider,
+      model: adapter.model,
+    };
+
+    const { value, replayed } = mutation(this.database, {
+      idempotencyKey,
+      operation: 'execution.dispatch',
+      request: { versionId: normalizedVersionId, actorId, adapter: adapterName, repositoryRoot },
+    }, () => {
+      const participant = this.ensureParticipant(participantIdentity);
+      const run = {
+        id: randomUUID(),
+        workPackageVersionId: normalizedVersionId,
+        discussionId: discussionRow.id,
+        adapter: adapterName,
+        provider: adapter.provider,
+        model: adapter.model,
+        displayName: adapter.displayName,
+        status: 'RUNNING',
+        errorCode: '',
+        errorMessage: '',
+        startedAt: now(),
+        completedAt: '',
+        rowVersion: 1,
+        changeSet: null,
+      };
+      this.database.prepare(`
+        INSERT INTO execution_runs(
+          id, work_package_version_id, discussion_id, participant_id,
+          dispatched_by_participant_id, adapter, provider, model, repository_root,
+          status, started_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'RUNNING', ?)
+      `).run(
+        run.id, normalizedVersionId, discussionRow.id, participant.id, actorId,
+        adapterName, adapter.provider, adapter.model, repositoryRoot, run.startedAt,
+      );
+      this.touchDiscussion(discussionRow.id, run.startedAt);
+      appendAudit(this.database, {
+        eventType: 'EXECUTION_DISPATCHED', resourceType: 'EXECUTION_RUN', resourceId: run.id, actorId,
+        details: { workPackageVersionId: normalizedVersionId, adapter: adapterName },
+      });
+      return run;
+    });
+
+    if (!replayed && value.status === 'RUNNING' && !this.activeExecutions.has(value.id)) {
+      const controller = new AbortController();
+      this.activeExecutions.set(value.id, { controller });
+      const completion = this.completeExecutionRun({
+        run: value, adapter, content: version.content, repositoryRoot, controller,
+      }).finally(() => this.activeExecutions.delete(value.id));
+      this.trackedExecutions.add(completion);
+      completion.finally(() => this.trackedExecutions.delete(completion));
+    }
+    return this.requireExecutionRun(value.id);
+  }
+
+  async completeExecutionRun({ run, adapter, content, repositoryRoot, controller }) {
+    try {
+      const result = await adapter.execute({ content, repositoryRoot, signal: controller.signal });
+      const changeSet = buildChangeSet(result?.diff);
+      const completedAt = now();
+      transaction(this.database, () => {
+        const current = this.requireExecutionRun(run.id);
+        if (current.status !== 'RUNNING') return;
+        this.database.prepare(`
+          INSERT INTO execution_change_sets(
+            id, execution_run_id, work_package_version_id, diff, diff_sha256, file_count, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          randomUUID(), run.id, run.workPackageVersionId,
+          changeSet.diff, changeSet.diffSha256, changeSet.fileCount, completedAt,
+        );
+        this.database.prepare(`
+          UPDATE execution_runs
+          SET status = 'SUCCEEDED', completed_at = ?, row_version = row_version + 1
+          WHERE id = ? AND status = 'RUNNING'
+        `).run(completedAt, run.id);
+        appendAudit(this.database, {
+          eventType: 'EXECUTION_CHANGE_SET_RECORDED', resourceType: 'EXECUTION_RUN', resourceId: run.id,
+          actorId: null,
+          details: { fileCount: changeSet.fileCount, diffSha256: changeSet.diffSha256 },
+        });
+      });
+      this.touchDiscussion(run.discussionId, completedAt);
+    } catch (error) {
+      // A shutdown races the database close; startup recovery marks the run interrupted.
+      if (this.shuttingDown) return;
+      const failure = safeAgentFailure(error, run.adapter);
+      const completedAt = now();
+      const status = controller.signal.aborted ? 'CANCELLED' : 'FAILED';
+      this.database.prepare(`
+        UPDATE execution_runs
+        SET status = ?, error_code = ?, error_message = ?, completed_at = ?,
+            row_version = row_version + 1
+        WHERE id = ? AND status = 'RUNNING'
+      `).run(status, failure.code, failure.message, completedAt, run.id);
+      this.touchDiscussion(run.discussionId, completedAt);
+    }
+  }
+
+  cancelExecution(runId, input = {}, actorId) {
+    this.assertOwner(actorId);
+    const normalizedRunId = requiredId(runId, 'Execution run');
+    const idempotencyKey = requiredIdempotencyKey(input.idempotencyKey);
+    const { value } = mutation(this.database, {
+      idempotencyKey,
+      operation: 'execution.cancel',
+      request: { runId: normalizedRunId, actorId },
+    }, () => {
+      const run = this.requireExecutionRun(normalizedRunId);
+      if (run.status !== 'RUNNING') return run;
+      this.activeExecutions.get(normalizedRunId)?.controller.abort();
+      this.database.prepare(`
+        UPDATE execution_runs
+        SET status = 'CANCELLED', error_code = 'CANCELLED',
+            error_message = 'The owner cancelled this execution.',
+            completed_at = ?, row_version = row_version + 1
+        WHERE id = ? AND status = 'RUNNING'
+      `).run(now(), normalizedRunId);
+      appendAudit(this.database, {
+        eventType: 'EXECUTION_CANCELLED', resourceType: 'EXECUTION_RUN', resourceId: normalizedRunId, actorId,
+        details: {},
+      });
+      return this.requireExecutionRun(normalizedRunId);
+    });
+    return value;
   }
 
   requirePackageVersion(id) {
@@ -1470,6 +1715,7 @@ export class PlanningService {
   shutdown({ timeoutMs = 6000 } = {}) {
     if (this.shutdownPromise) return this.shutdownPromise;
     this.shuttingDown = true;
+    for (const state of this.activeExecutions.values()) state.controller.abort();
     const active = [...this.activeRuns.entries()];
     this.shutdownPromise = (async () => {
       for (const [, state] of active) state.controller.abort();

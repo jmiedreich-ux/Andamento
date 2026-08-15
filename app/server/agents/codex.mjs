@@ -1,3 +1,12 @@
+import { buildExecutionPrompt } from '../execution/change-set.mjs';
+
+const EXECUTION_INSTRUCTIONS = [
+  'You are proposing a change set for an already owner-approved work package inside Andamento.',
+  'Read the repository for context. You are sandboxed read-only and must not attempt to modify anything.',
+  'Reply with a unified diff and nothing else: no preamble, no explanation, no closing summary.',
+  'If the package needs no change, reply with an empty response.',
+].join(' ');
+
 const BASE_INSTRUCTIONS = [
   'You are a planning participant inside Andamento.',
   'Respond with concise recommendations, risks, assumptions, and alternatives for the owner to decide.',
@@ -246,7 +255,21 @@ export class CodexPlanningAgent {
     return probeWebSocket(this.url);
   }
 
-  async contribute({ prompt, repositoryRoot, threadId, onThread, signal }) {
+  // Execution reuses the hardened contribution turn: the sandbox stays read-only,
+  // so the model can read the repository but returns a proposed diff as text.
+  async execute({ content, repositoryRoot, signal }) {
+    const contribution = await this.contribute({
+      prompt: buildExecutionPrompt(content),
+      repositoryRoot,
+      threadId: '',
+      onThread: () => {},
+      signal,
+      instructions: EXECUTION_INSTRUCTIONS,
+    });
+    return { provider: contribution.provider, model: contribution.model, diff: contribution.content };
+  }
+
+  async contribute({ prompt, repositoryRoot, threadId, onThread, signal, instructions }) {
     const connection = this.connectionFactory(this.url, signal);
     let activeThreadId = threadId;
     let activeTurnId = '';
@@ -288,7 +311,7 @@ export class CodexPlanningAgent {
           approvalPolicy: 'never',
           sandbox: 'read-only',
           serviceName: 'andamento-planning',
-          baseInstructions: BASE_INSTRUCTIONS,
+          baseInstructions: instructions || BASE_INSTRUCTIONS,
           ephemeral: false,
         }, { signal });
         activeThreadId = started.thread.id;

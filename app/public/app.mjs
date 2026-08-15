@@ -860,6 +860,69 @@ function packageCompleteness(draft = {}) {
   return { completeFields, totalFields: 6 };
 }
 
+function executionStatusLabel(run) {
+  return {
+    RUNNING: 'Reading the repository…',
+    SUCCEEDED: `${run.changeSet?.fileCount || 0} file${run.changeSet?.fileCount === 1 ? '' : 's'} proposed`,
+    FAILED: 'Execution failed',
+    CANCELLED: 'Execution cancelled',
+    INTERRUPTED: 'Execution interrupted',
+  }[run.status] || run.status;
+}
+
+function changeSetMarkup(run) {
+  if (run.status !== 'SUCCEEDED' || !run.changeSet) return '';
+  if (!run.changeSet.fileCount) {
+    return '<p class="execution-empty">The participant proposed no change for this package.</p>';
+  }
+  return `
+    <details class="execution-diff">
+      <summary>Read the proposed change set</summary>
+      <pre class="diff-view" tabindex="0" aria-label="Proposed change set">${escapeHtml(run.changeSet.diff)}</pre>
+      <p class="lineage-footnote">Nothing was written. This change set is a proposal recorded against v${run.versionNumber || ''} · sha256 ${escapeHtml(run.changeSet.diffSha256.slice(0, 12))}…</p>
+    </details>`;
+}
+
+function executionMarkup(selected) {
+  const executions = (state.detail.workPackage?.executions || [])
+    .filter(run => run.workPackageVersionId === selected.id);
+  const dispatchBusy = isBusy('dispatch-execution');
+  const running = executions.find(run => run.status === 'RUNNING');
+  const availability = state.detail.agentAvailability?.codex || { blocked: false };
+  const codexReady = state.bootstrap.capabilities.codex.available && !availability.blocked;
+  const adapters = [
+    ...(codexReady ? [{ id: 'codex', label: 'Dispatch to Codex' }] : []),
+    ...(state.bootstrap.capabilities.deterministic.available
+      ? [{ id: 'deterministic', label: 'Dispatch to test participant' }] : []),
+  ];
+  const actions = adapters.length
+    ? adapters.map(adapter => `
+        <button type="button" class="primary-action" data-action="dispatch-execution"
+          data-version-id="${escapeHtml(selected.id)}" data-adapter="${escapeHtml(adapter.id)}"
+          ${dispatchBusy || running ? 'disabled' : ''}>${icon('arrow')} ${escapeHtml(dispatchBusy ? 'Dispatching…' : adapter.label)}</button>`).join('')
+    : '<p class="execution-empty">No execution participant is available. Start the local Codex bridge to dispatch this package.</p>';
+  const rows = executions.map(run => `
+    <li class="execution-run" data-status="${escapeHtml(run.status)}">
+      <div class="execution-line">
+        <span class="execution-actor">${escapeHtml(run.displayName)}</span>
+        <span class="execution-state">${escapeHtml(executionStatusLabel(run))}</span>
+        <time datetime="${escapeHtml(run.startedAt)}">${escapeHtml(formatDate(run.startedAt, { timeOnly: true }))}</time>
+        ${run.status === 'RUNNING'
+          ? `<button type="button" class="text-action" data-action="cancel-execution" data-run-id="${escapeHtml(run.id)}" ${isBusy(`execution:${run.id}`) ? 'disabled' : ''}>Cancel</button>` : ''}
+      </div>
+      ${run.errorMessage ? `<p class="execution-error" role="status">${escapeHtml(run.errorMessage)}</p>` : ''}
+      ${changeSetMarkup({ ...run, versionNumber: selected.versionNumber })}
+    </li>`).join('');
+  return `
+    <section class="execution-station" aria-labelledby="executionTitle">
+      <span class="station-label">Execution</span>
+      <h4 id="executionTitle">Proposed change set</h4>
+      <p class="execution-guidance">Dispatch reads this repository and returns a change set for you to read. Nothing is written to your files.</p>
+      <div class="execution-actions">${actions}</div>
+      ${executions.length ? `<ul class="execution-list" aria-label="Execution runs">${rows}</ul>` : ''}
+    </section>`;
+}
+
 function packageStationMarkup() {
   const acceptedCount = state.detail.points.filter(point => point.disposition === 'ACCEPTED').length;
   const workPackage = state.detail.workPackage;
@@ -944,6 +1007,7 @@ function packageStationMarkup() {
         ${packageReadOnlyField('Evidence requirements', selected.content.evidenceRequirements)}
         <div class="owner-seal" aria-hidden="true"><span>Owner authority</span><strong>A</strong><span>Andamento</span></div>
         <p class="lineage-footnote">Approved by ${escapeHtml(approval?.ownerDisplayName || 'Owner')} · ${escapeHtml(formatDate(approval?.occurredAt || selected.approvedAt))} · ${selected.sourcePointIds.length} source point${selected.sourcePointIds.length === 1 ? '' : 's'}</p>
+        ${executionMarkup(selected)}
         ${selected.id === workPackage.currentVersion.id && !versions.some(version => version.status === 'DRAFT')
           ? `<button type="button" class="primary-action" data-action="next-version" data-version-id="${escapeHtml(selected.id)}" ${packageMutationBusy ? 'disabled' : ''}>Create version ${selected.versionNumber + 1} draft</button>` : ''}
       </div>`;
@@ -2360,6 +2424,30 @@ document.addEventListener('click', event => {
         await refreshAfterCommittedMutation({ operationSlot });
       }
     });
+  }
+  if (action === 'dispatch-execution') {
+    if (isBusy('dispatch-execution')) return;
+    const versionId = button.dataset.versionId;
+    const operationSlot = `dispatch:${versionId}:${button.dataset.adapter}`;
+    const target = `/api/work-package-versions/${encodeURIComponent(versionId)}/execution-runs`;
+    const payload = { adapter: button.dataset.adapter };
+    void withMutation('dispatch-execution', () => api(target, {
+      method: 'POST',
+      body: { ...payload, idempotencyKey: operationKey(operationSlot, 'execution-dispatch', { target, payload }) },
+    }), {
+      successMessage: 'Execution dispatched. Nothing is written until you say so.',
+      operationSlot,
+    });
+  }
+  if (action === 'cancel-execution') {
+    const runId = button.dataset.runId;
+    if (isBusy(`execution:${runId}`)) return;
+    const operationSlot = `cancel-execution:${runId}`;
+    const target = `/api/execution-runs/${encodeURIComponent(runId)}/cancel`;
+    void withMutation(`execution:${runId}`, () => api(target, {
+      method: 'POST',
+      body: { idempotencyKey: operationKey(operationSlot, 'execution-cancel', { target, payload: {} }) },
+    }), { successMessage: 'Execution cancelled.', operationSlot });
   }
   if (action === 'right-tab') {
     state.rightTab = button.dataset.tab;

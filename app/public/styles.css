@@ -1849,3 +1849,109 @@ a.header-value {
     animation: none;
   }
 }
+
+/* Execution: a proposed change set, never a write. */
+.execution-station {
+  display: grid;
+  gap: 8px;
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid var(--rule);
+}
+
+.execution-station h4 {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: 1.03rem;
+  font-weight: 680;
+  letter-spacing: -0.018em;
+}
+
+.execution-guidance,
+.execution-empty {
+  margin: 0;
+  color: var(--graphite-soft);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.execution-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.execution-list {
+  display: grid;
+  gap: 10px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.execution-run {
+  padding: 10px 12px;
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--rule-strong);
+  background: var(--trace);
+}
+
+.execution-run[data-status="RUNNING"] { border-left-color: var(--plum); }
+.execution-run[data-status="SUCCEEDED"] { border-left-color: var(--owner-deep); }
+.execution-run[data-status="FAILED"] { border-left-color: var(--brick); }
+.execution-run[data-status="CANCELLED"],
+.execution-run[data-status="INTERRUPTED"] { border-left-color: var(--amber); }
+
+.execution-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.execution-actor {
+  font-weight: 680;
+}
+
+.execution-state,
+.execution-line time {
+  color: var(--graphite-soft);
+  font-family: var(--font-data);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.execution-line time { margin-left: auto; }
+
+.execution-error {
+  margin: 6px 0 0;
+  color: var(--brick);
+  font-size: 0.8rem;
+}
+
+.execution-diff {
+  margin-top: 8px;
+}
+
+.execution-diff summary {
+  cursor: pointer;
+  font-family: var(--font-data);
+  font-size: 0.74rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.diff-view {
+  max-height: 320px;
+  margin: 8px 0 4px;
+  padding: 10px 12px;
+  overflow: auto;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  font-family: var(--font-data);
+  font-size: 0.76rem;
+  line-height: 1.5;
+  white-space: pre;
+}

@@ -167,6 +167,29 @@ export function prepareCompleteDraft(service, discussionId, content = completePa
   }).version;
 }
 
+export function approveCompleteDraft(service, discussionId, content = completePackageContent()) {
+  const complete = prepareCompleteDraft(service, discussionId, content);
+  service.approvePackageVersion(complete.id, {
+    expectedVersion: complete.rowVersion,
+    idempotencyKey: idempotencyKey('approve-package'),
+  });
+  return service.requirePackageVersion(complete.id);
+}
+
+export async function waitForExecution(service, discussionId, runId, expectedStatuses, timeoutMs = 4000) {
+  const statuses = new Set(Array.isArray(expectedStatuses) ? expectedStatuses : [expectedStatuses]);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const runs = service.getDiscussion(discussionId).workPackage?.executions || [];
+    const run = runs.find(candidate => candidate.id === runId);
+    if (run && statuses.has(run.status)) return run;
+    await delay(20);
+  }
+  const runs = service.getDiscussion(discussionId).workPackage?.executions || [];
+  const current = runs.find(candidate => candidate.id === runId);
+  assert.fail(`Execution ${runId} did not reach ${[...statuses].join('/')} within ${timeoutMs}ms; current=${current?.status || 'missing'}`);
+}
+
 export async function waitForRun(service, discussionId, runId, expectedStatuses, timeoutMs = 4000) {
   const statuses = new Set(Array.isArray(expectedStatuses) ? expectedStatuses : [expectedStatuses]);
   const deadline = Date.now() + timeoutMs;

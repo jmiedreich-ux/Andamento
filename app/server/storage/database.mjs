@@ -129,6 +129,30 @@ export async function openDatabase(databasePath, { busyTimeoutMs = 5000 } = {}) 
           );
         }
       }
+      // An execution that was in flight when the process stopped produced no
+      // change set, so it can only be reported as interrupted.
+      const interruptedExecutions = database.prepare(`
+        SELECT id FROM execution_runs WHERE status = 'RUNNING' ORDER BY started_at, id
+      `).all();
+      const updateExecution = database.prepare(`
+        UPDATE execution_runs
+        SET status = 'INTERRUPTED', error_code = 'SERVICE_RESTARTED',
+            error_message = 'The local service restarted before this execution completed. Dispatch again to retry.',
+            completed_at = ?, row_version = row_version + 1
+        WHERE id = ? AND status = 'RUNNING'
+      `);
+      const insertExecutionAudit = database.prepare(`
+        INSERT INTO audit_events(
+          id, event_type, resource_type, resource_id, actor_participant_id, details_json, occurred_at
+        ) VALUES (?, 'EXECUTION_RUN_INTERRUPTED', 'EXECUTION_RUN', ?, NULL, ?, ?)
+      `);
+      for (const run of interruptedExecutions) {
+        if (Number(updateExecution.run(completedAt, run.id).changes) === 1) {
+          insertExecutionAudit.run(
+            randomUUID(), run.id, JSON.stringify({ reason: 'SERVICE_RESTARTED' }), completedAt,
+          );
+        }
+      }
       database.exec('COMMIT;');
     } catch (error) {
       database.exec('ROLLBACK;');
